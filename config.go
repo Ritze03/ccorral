@@ -9,6 +9,7 @@ package main
 //	mode=green|yellow|red
 //	yellow=<cpulist>
 //	red=<cpulist>
+//	interval=<ms>
 //
 // green means no limit, yellow and red mean "pin to that group". A missing or
 // empty group key means the default computed from the topology (cpuDefaults).
@@ -19,6 +20,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -27,6 +29,13 @@ const (
 	modeGreen  = "green"
 	modeYellow = "yellow"
 	modeRed    = "red"
+)
+
+// Sweep interval in milliseconds: the allowed range and the default.
+const (
+	intervalMin     = 500
+	intervalMax     = 10000
+	intervalDefault = 5000
 )
 
 // configMu serializes read-modify-write within this process; the rename in
@@ -49,6 +58,7 @@ type Config struct {
 	Yellow, Red    []int  // explicit or default
 	YellowExplicit bool   // false: Yellow is the computed default
 	RedExplicit    bool
+	IntervalMs     int // sweep interval, intervalMin..intervalMax
 }
 
 // Group is the CPU set a mode pins to; nil for green (no limit).
@@ -145,10 +155,17 @@ func configSet(path, key, value string) error {
 // the topology failing, in which case the groups are nil.
 func configLoad(path, sysRoot string) (Config, error) {
 	kv := configKV(path)
-	c := Config{Mode: modeYellow}
+	c := Config{Mode: modeYellow, IntervalMs: intervalDefault}
 	switch kv["mode"] {
 	case modeGreen, modeYellow, modeRed:
 		c.Mode = kv["mode"]
+	}
+	if v := kv["interval"]; v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms >= intervalMin && ms <= intervalMax {
+			c.IntervalMs = ms
+		} else {
+			log.Printf("config: ignoring interval=%q: want an integer from %d to %d ms", v, intervalMin, intervalMax)
+		}
 	}
 	cores, err := cpuCores(sysRoot)
 	if err != nil {
@@ -212,4 +229,12 @@ func configResetGroup(path, group string) error {
 		return fmt.Errorf("unknown group %q", group)
 	}
 	return configSet(path, group, "")
+}
+
+// configSetInterval persists the sweep interval in milliseconds.
+func configSetInterval(path string, ms int) error {
+	if ms < intervalMin || ms > intervalMax {
+		return fmt.Errorf("interval %d ms out of range %d-%d", ms, intervalMin, intervalMax)
+	}
+	return configSet(path, "interval", strconv.Itoa(ms))
 }

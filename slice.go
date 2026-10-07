@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os/exec"
 	"sort"
 	"strings"
@@ -49,6 +50,51 @@ type sliceBackend struct {
 
 	mu      sync.Mutex
 	applied string // "<mode> <cpulist>" of the last successful apply, "" before
+	snap    sliceSnapshot
+	ms      int           // sweep interval in ms, 0 before the first config load
+	changed chan struct{} // created on first use
+}
+
+// sliceSnapshot is what the tray shows: the live mode and each mode's cores.
+type sliceSnapshot struct {
+	Mode  string            // "green" | "yellow" | "red" ("" before first successful apply)
+	Cores map[string]string // "green","yellow","red" -> cpulist, e.g. "3-9,13-19"
+}
+
+// Snapshot is a copy of the state after the last successful apply.
+func (b *sliceBackend) Snapshot() sliceSnapshot {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := sliceSnapshot{Mode: b.snap.Mode, Cores: map[string]string{}}
+	for k, v := range b.snap.Cores {
+		s.Cores[k] = v
+	}
+	return s
+}
+
+// chanLocked returns the change channel. b.mu held.
+func (b *sliceBackend) chanLocked() chan struct{} {
+	if b.changed == nil {
+		b.changed = make(chan struct{}, 1)
+	}
+	return b.changed
+}
+
+// Changed receives a value after every successful apply (coalesced if nobody reads).
+func (b *sliceBackend) Changed() <-chan struct{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.chanLocked()
+}
+
+// Interval is the sweep interval from the last loaded config.
+func (b *sliceBackend) Interval() time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.ms == 0 {
+		return intervalDefault * time.Millisecond
+	}
+	return time.Duration(b.ms) * time.Millisecond
 }
 
 func newSliceBackend() *sliceBackend {
@@ -58,20 +104,25 @@ func newSliceBackend() *sliceBackend {
 // apply sets the slice to cfg's mode. A topology failure (err from configLoad)
 // applies nothing; a mode with no CPUs is refused too. b.mu held.
 func (b *sliceBackend) apply(cfg Config, err error) error {
+	if cfg.IntervalMs != 0 && cfg.IntervalMs != b.ms {
+		b.ms = cfg.IntervalMs
+		log.Printf("ccorral: sweep interval %d ms", b.ms)
+	}
 	if err != nil {
 		return err
 	}
 	group := cfg.Group(cfg.Mode)
-	if cfg.Mode == modeGreen { // explicit full list: AllowedCPUs= (empty) would not widen running processes
-		cores, err := cpuCores(b.sysRoot)
-		if err != nil {
-			return err
-		}
-		group = nil
+	var all []int // explicit full list: AllowedCPUs= (empty) would not widen running processes
+	if cores, err := cpuCores(b.sysRoot); err == nil {
 		for _, c := range cores {
-			group = append(group, c...)
+			all = append(all, c...)
 		}
-		sort.Ints(group)
+		sort.Ints(all)
+	} else if cfg.Mode == modeGreen {
+		return err
+	}
+	if cfg.Mode == modeGreen {
+		group = all
 	}
 	if len(group) == 0 {
 		return fmt.Errorf("%s has no CPUs: refusing to clear the limit", cfg.Mode)
@@ -80,6 +131,13 @@ func (b *sliceBackend) apply(cfg Config, err error) error {
 		return err
 	}
 	b.applied = cfg.Mode + " " + cpuFormat(group)
+	b.snap = sliceSnapshot{Mode: cfg.Mode, Cores: map[string]string{
+		modeGreen: cpuFormat(all), modeYellow: cpuFormat(cfg.Yellow), modeRed: cpuFormat(cfg.Red),
+	}}
+	select {
+	case b.chanLocked() <- struct{}{}:
+	default:
+	}
 	return nil
 }
 

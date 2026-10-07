@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -168,5 +171,66 @@ func TestConfigSetRejects(t *testing.T) {
 	}
 	if got := readCfg(t, path); got != "mode=red\n" {
 		t.Errorf("file changed by rejected sets: %q", got)
+	}
+}
+
+func TestConfigInterval(t *testing.T) {
+	sys := fakeSys(t, smt10())
+	for _, tt := range []struct {
+		file    string
+		want    int
+		wantLog bool
+	}{
+		{"", 5000, false},
+		{"interval=\n", 5000, false},
+		{"interval=500\n", 500, false},
+		{"interval = 10000\n", 10000, false},
+		{"interval=2500\n", 2500, false},
+		{"interval=499\n", 5000, true},
+		{"interval=10001\n", 5000, true},
+		{"interval=abc\n", 5000, true},
+		{"interval=1.5\n", 5000, true},
+	} {
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		path := cfgPath(t)
+		writeCfg(t, path, tt.file)
+		c, err := configLoad(path, sys)
+		log.SetOutput(os.Stderr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.IntervalMs != tt.want {
+			t.Errorf("%q: IntervalMs = %d, want %d", tt.file, c.IntervalMs, tt.want)
+		}
+		if got := strings.Contains(buf.String(), "config: ignoring interval="); got != tt.wantLog {
+			t.Errorf("%q: logged = %v (%q)", tt.file, got, buf.String())
+		}
+	}
+	// Also set when the topology is unreadable.
+	if c, err := configLoad(cfgPath(t), t.TempDir()); err == nil || c.IntervalMs != 5000 {
+		t.Errorf("no topology: %+v, %v", c, err)
+	}
+}
+
+func TestConfigSetInterval(t *testing.T) {
+	path := cfgPath(t)
+	writeCfg(t, path, "mode=red\n")
+	for _, ms := range []int{499, 10001, 0, -1} {
+		err := configSetInterval(path, ms)
+		if err == nil || !strings.Contains(err.Error(), "500-10000") {
+			t.Errorf("configSetInterval(%d) = %v, want range error", ms, err)
+		}
+	}
+	if got := readCfg(t, path); got != "mode=red\n" {
+		t.Errorf("file changed by rejected sets: %q", got)
+	}
+	for _, ms := range []int{500, 10000} {
+		if err := configSetInterval(path, ms); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := readCfg(t, path); got != "mode=red\ninterval=10000\n" {
+		t.Errorf("config = %q", got)
 	}
 }

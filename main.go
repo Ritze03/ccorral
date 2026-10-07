@@ -24,10 +24,7 @@ usage:
   ccorral install               install the binary and the systemd user unit
   ccorral uninstall             remove them again`
 
-const (
-	sweepInterval    = 5 * time.Second
-	ipcShutdownGrace = 3 * time.Second
-)
+const ipcShutdownGrace = 3 * time.Second
 
 func main() {
 	log.SetFlags(0)
@@ -91,7 +88,7 @@ func runDaemon() int {
 	if err := b.Start(); err != nil {
 		log.Printf("ccorral: applying saved mode: %v", err)
 	}
-	sweepLoop(ctx)
+	sweepLoop(ctx, b.Interval)
 
 	// Let an in-flight IPC request finish and the socket get unlinked.
 	select {
@@ -111,9 +108,10 @@ func sweepAndLog() {
 	}
 }
 
-// sweepLoop sweeps every sweepInterval until ctx is done.
-func sweepLoop(ctx context.Context) {
-	t := time.NewTicker(sweepInterval)
+// sweepLoop sweeps, then waits interval() (re-read every round, so a reloaded
+// config takes effect after the current wait), until ctx is done.
+func sweepLoop(ctx context.Context, interval func() time.Duration) {
+	t := time.NewTimer(interval())
 	defer t.Stop()
 	for {
 		select {
@@ -122,5 +120,6 @@ func sweepLoop(ctx context.Context) {
 		case <-t.C:
 		}
 		sweepAndLog()
+		t.Reset(interval())
 	}
 }

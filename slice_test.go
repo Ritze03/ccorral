@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestSlice is a sliceBackend on a temp config and a fake 10-core SMT sysfs
@@ -170,3 +171,91 @@ func TestSliceApplyRefusesGreenWithoutCPUs(t *testing.T) {
 
 // The real runner is never used by the tests above.
 var _ sliceRunner = sliceSystemctl
+
+func TestSliceSnapshot(t *testing.T) {
+	b, _ := newTestSlice(t)
+	if s := b.Snapshot(); s.Mode != "" || len(s.Cores) != 0 {
+		t.Errorf("before apply: %+v", s)
+	}
+	if err := b.SetMode(modeRed); err != nil {
+		t.Fatal(err)
+	}
+	want := sliceSnapshot{Mode: modeRed, Cores: map[string]string{
+		"green": "0-19", "yellow": "3-9,13-19", "red": "7-9,17-19",
+	}}
+	got := b.Snapshot()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Snapshot = %+v, want %+v", got, want)
+	}
+	got.Cores["red"] = "x" // a copy: must not leak back
+	if b.Snapshot().Cores["red"] != "7-9,17-19" {
+		t.Error("Snapshot shares its map")
+	}
+	// A failed apply leaves the last good snapshot.
+	b.run = func(...string) error { return errors.New("boom") }
+	_ = b.SetMode(modeGreen)
+	if b.Snapshot().Mode != modeRed {
+		t.Errorf("Mode after failed apply = %q", b.Snapshot().Mode)
+	}
+}
+
+func TestSliceChanged(t *testing.T) {
+	b, _ := newTestSlice(t)
+	ch := b.Changed()
+	pending := func() bool {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}
+	if pending() {
+		t.Fatal("fired before any apply")
+	}
+	if err := b.SetMode(modeRed); err != nil {
+		t.Fatal(err)
+	}
+	if !pending() || pending() {
+		t.Error("want exactly one signal after one apply")
+	}
+	// Two applies with nobody reading must not block; they coalesce.
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.SetMode(modeGreen); err != nil {
+		t.Fatal(err)
+	}
+	if !pending() || pending() {
+		t.Error("want one coalesced signal")
+	}
+	// Failed applies do not signal.
+	b.run = func(...string) error { return errors.New("boom") }
+	_ = b.Reload()
+	if pending() {
+		t.Error("signal after failed apply")
+	}
+}
+
+func TestSliceInterval(t *testing.T) {
+	b, _ := newTestSlice(t)
+	if got := b.Interval(); got != 5*time.Second {
+		t.Errorf("default Interval = %v", got)
+	}
+	writeCfg(t, b.path, "interval=1500\n")
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Interval(); got != 1500*time.Millisecond {
+		t.Errorf("Interval after reload = %v", got)
+	}
+	if err := configSetInterval(b.path, 800); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.Interval(); got != 800*time.Millisecond {
+		t.Errorf("Interval after second reload = %v", got)
+	}
+}
