@@ -99,7 +99,7 @@ func runDaemon() int {
 	if err := b.Start(); err != nil {
 		log.Printf("ccorral: applying saved mode: %v", err)
 	}
-	sweepLoop(ctx, b.Interval)
+	sweepLoop(ctx, b.Interval, b.IntervalChanged(), sweepAndLog)
 
 	// Let an in-flight IPC request finish and the socket get unlinked.
 	select {
@@ -119,9 +119,9 @@ func sweepAndLog() {
 	}
 }
 
-// sweepLoop sweeps, then waits interval() (re-read every round, so a reloaded
-// config takes effect after the current wait), until ctx is done.
-func sweepLoop(ctx context.Context, interval func() time.Duration) {
+// sweepLoop calls sweep every interval() until ctx is done. A nudge (the
+// interval changed) restarts the wait with the new value, without a sweep.
+func sweepLoop(ctx context.Context, interval func() time.Duration, nudge <-chan struct{}, sweep func()) {
 	t := time.NewTimer(interval())
 	defer t.Stop()
 	for {
@@ -129,8 +129,15 @@ func sweepLoop(ctx context.Context, interval func() time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			sweep()
+		case <-nudge:
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
 		}
-		sweepAndLog()
 		t.Reset(interval())
 	}
 }

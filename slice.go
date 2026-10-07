@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,8 +52,10 @@ type sliceBackend struct {
 	mu      sync.Mutex
 	applied string // "<mode> <cpulist>" of the last successful apply, "" before
 	snap    sliceSnapshot
-	ms      int           // sweep interval in ms, 0 before the first config load
 	changed chan struct{} // created on first use
+	nudge   chan struct{} // signalled when the sweep interval changes
+
+	ms atomic.Int64 // sweep interval in ms, 0 before the first config load; not under mu
 }
 
 // sliceSnapshot is what the tray shows: the live mode and each mode's cores.
@@ -87,26 +90,31 @@ func (b *sliceBackend) Changed() <-chan struct{} {
 	return b.chanLocked()
 }
 
-// Interval is the sweep interval from the last loaded config.
+// Interval is the sweep interval from the last loaded config. It never waits
+// for an in-flight apply (which holds b.mu across systemctl).
 func (b *sliceBackend) Interval() time.Duration {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.ms == 0 {
-		return intervalDefault * time.Millisecond
+	if ms := b.ms.Load(); ms != 0 {
+		return time.Duration(ms) * time.Millisecond
 	}
-	return time.Duration(b.ms) * time.Millisecond
+	return intervalDefault * time.Millisecond
 }
 
+// IntervalChanged receives a value after the sweep interval changes (coalesced).
+func (b *sliceBackend) IntervalChanged() <-chan struct{} { return b.nudge }
+
 func newSliceBackend() *sliceBackend {
-	return &sliceBackend{path: configPath(), sysRoot: "/sys", run: sliceSystemctl}
+	return &sliceBackend{path: configPath(), sysRoot: "/sys", run: sliceSystemctl, nudge: make(chan struct{}, 1)}
 }
 
 // apply sets the slice to cfg's mode. A topology failure (err from configLoad)
 // applies nothing; a mode with no CPUs is refused too. b.mu held.
 func (b *sliceBackend) apply(cfg Config, err error) error {
-	if cfg.IntervalMs != 0 && cfg.IntervalMs != b.ms {
-		b.ms = cfg.IntervalMs
-		log.Printf("ccorral: sweep interval %d ms", b.ms)
+	if ms := int64(cfg.IntervalMs); ms != 0 && ms != b.ms.Swap(ms) {
+		log.Printf("ccorral: sweep interval %d ms", ms)
+		select {
+		case b.nudge <- struct{}{}:
+		default:
+		}
 	}
 	if err != nil {
 		return err

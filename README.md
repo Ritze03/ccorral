@@ -4,7 +4,7 @@ Pins Claude Code CLI sessions, and everything they spawn (builds, tests, MCP ser
 chosen set of CPU cores, so the rest of the desktop stays responsive. Linux only.
 
 It works through `AllowedCPUs` on the systemd user slice `claude.slice`, so a change applies
-live to running sessions and their children. A daemon sweeps every 5 s (configurable) and moves Claude
+live to running sessions and their children. A daemon sweeps every 5 s by default (`interval=`, 500 to 10000 ms) and moves Claude
 sessions that were started outside the slice (tmux, other terminals, anything that doesn't use
 the wrapper below) into it. Claude is recognised by its executable under
 `~/.local/share/claude/versions/`.
@@ -103,7 +103,7 @@ journalctl --user -u ccorral
 
 ## Instant placement (optional)
 
-Without this, a new Claude session is moved into the slice by the next sweep, within 5 s. To
+Without this, a new Claude session is moved into the slice by the next sweep, within one sweep interval (5 s by default, `interval=` 500–10000 ms). To
 start it inside the slice from the first moment, wrap `claude` in your `.zshrc` or `.bashrc`:
 
 ```sh

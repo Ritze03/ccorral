@@ -514,7 +514,13 @@ func RunTray(ctx context.Context, b trayBackend) {
 			return
 		case <-changed:
 			t.sync()
-		case sig := <-sigs:
+		case sig, ok := <-sigs:
+			if !ok {
+				// godbus closes the channel when the connection dies; without
+				// this return the loop would spin on nil. No reconnect.
+				log.Printf("tray: session bus gone, tray stopped")
+				return
+			}
 			if sig == nil || sig.Name != "org.freedesktop.DBus.NameOwnerChanged" || len(sig.Body) < 3 {
 				continue
 			}

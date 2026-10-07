@@ -16,6 +16,7 @@ func newTestSlice(t *testing.T) (*sliceBackend, *[][]string) {
 	b := &sliceBackend{
 		path:    cfgPath(t),
 		sysRoot: fakeSys(t, smt10()),
+		nudge:   make(chan struct{}, 1),
 		run: func(args ...string) error {
 			calls = append(calls, args)
 			return nil
@@ -257,5 +258,28 @@ func TestSliceInterval(t *testing.T) {
 	}
 	if got := b.Interval(); got != 800*time.Millisecond {
 		t.Errorf("Interval after second reload = %v", got)
+	}
+}
+
+func TestSliceIntervalChanged(t *testing.T) {
+	b, _ := newTestSlice(t)
+	nudged := func() bool {
+		select {
+		case <-b.IntervalChanged():
+			return true
+		default:
+			return false
+		}
+	}
+	writeCfg(t, b.path, "interval=1500\n")
+	if err := b.Reload(); err != nil || !nudged() {
+		t.Fatalf("first load: err %v, nudged %v, want nudge", err, nudged())
+	}
+	if err := b.Reload(); err != nil || nudged() {
+		t.Error("nudge without an interval change")
+	}
+	writeCfg(t, b.path, "interval=800\n")
+	if err := b.Reload(); err != nil || !nudged() {
+		t.Error("no nudge after interval change")
 	}
 }
