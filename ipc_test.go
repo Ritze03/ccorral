@@ -71,10 +71,13 @@ func serve(t *testing.T, b ipcBackend) (string, func()) {
 
 func serveAt(t *testing.T, b ipcBackend, path string) func() {
 	t.Helper()
+	ln, err := ipcListen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
-	go func() { errc <- ServeIPC(ctx, b, path) }()
-	waitReady(t, path)
+	go func() { errc <- ServeIPC(ctx, b, ln) }()
 	stopped := false
 	stop := func() {
 		if stopped {
@@ -312,15 +315,14 @@ func TestStaleSocketIsReplaced(t *testing.T) {
 	}
 }
 
-func TestSecondServeIPCOnLiveSocketErrors(t *testing.T) {
+func TestSecondListenOnLiveSocketErrors(t *testing.T) {
 	b := &fakeBackend{}
 	path, _ := serve(t, b)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	err := ServeIPC(ctx, b, path)
+	ln, err := ipcListen(path)
 	if err == nil {
-		t.Fatal("second ServeIPC returned nil, want an already-running error")
+		ln.Close()
+		t.Fatal("second ipcListen returned nil, want an already-running error")
 	}
 	if !strings.Contains(err.Error(), "already running") {
 		t.Errorf("error %q, want it to say already running", err)

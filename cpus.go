@@ -42,6 +42,9 @@ func cpuCores(sysRoot string) ([][]int, error) {
 	return cores, nil
 }
 
+// cpuMaxID bounds ids so a typo like 0-4000000000 cannot allocate gigabytes.
+const cpuMaxID = 4095
+
 // cpuParse reads a cpulist such as "3-9,13-19" into sorted unique ids. Spaces
 // work as separators too, because `systemctl show` prints "3-9 13-19". An empty
 // string is an empty list; garbage, negatives and reversed ranges are errors.
@@ -58,6 +61,9 @@ func cpuParse(s string) ([]int, error) {
 			if b, err = strconv.Atoi(hi); err != nil || b < a || hi != strconv.Itoa(b) {
 				return nil, fmt.Errorf("bad cpu list %q", s)
 			}
+		}
+		if b > cpuMaxID {
+			return nil, fmt.Errorf("bad cpu list %q: cpu id above %d", s, cpuMaxID)
 		}
 		for i := a; i <= b; i++ {
 			set[i] = true

@@ -54,9 +54,9 @@ type sweepProc struct {
 	cgroup string
 }
 
-// sweepScan reads every readable process under root. Processes whose exe
-// cannot be read (other users, kernel threads) or that vanish mid-read are
-// skipped.
+// sweepScan reads every process under root whose stat is readable. An
+// unreadable exe (setuid or non-dumpable processes) leaves exe empty, which
+// never matches as a root but keeps the process in its parent's tree.
 func sweepScan(root string) (map[int]*sweepProc, error) {
 	ents, err := os.ReadDir(root)
 	if err != nil {
@@ -69,10 +69,7 @@ func sweepScan(root string) (map[int]*sweepProc, error) {
 			continue
 		}
 		dir := filepath.Join(root, e.Name())
-		exe, err := os.Readlink(filepath.Join(dir, "exe"))
-		if err != nil {
-			continue
-		}
+		exe, _ := os.Readlink(filepath.Join(dir, "exe"))
 		stat, err := os.ReadFile(filepath.Join(dir, "stat"))
 		if err != nil {
 			continue
@@ -105,6 +102,32 @@ func sweepCgroupV2(s string) string {
 		}
 	}
 	return ""
+}
+
+// sweepUnit is the unit directly below claude.slice in cgroup, even when the
+// process sits in a sub-cgroup of it.
+func sweepUnit(cgroup string) string {
+	_, rest, _ := strings.Cut(cgroup+"/", "/"+sweepSlice+"/")
+	unit, _, _ := strings.Cut(rest, "/")
+	return unit
+}
+
+// sweepAttach attaches pids to unit. The batch fails as a whole when one PID
+// died since the scan, so it then goes PID by PID and only counts failures.
+func sweepAttach(m sweepMover, unit string, pids []uint32) error {
+	if m.Attach(unit, pids) == nil {
+		return nil
+	}
+	failed := 0
+	for _, p := range pids {
+		if m.Attach(unit, []uint32{p}) != nil {
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d pids not attached to %s", failed, len(pids), unit)
+	}
+	return nil
 }
 
 func sweepInside(cgroup string) bool {
@@ -164,14 +187,29 @@ func sweepOnce(cfg sweepConfig) error {
 
 		if cg := procs[r].cgroup; sweepInside(cg) {
 			// Root is in the slice already (wrapper or earlier sweep): stragglers join its unit.
-			unit := filepath.Base(cg)
-			err = cfg.Mover.Attach(unit, outside)
+			err = sweepAttach(cfg.Mover, sweepUnit(cg), outside)
 		} else {
 			name := fmt.Sprintf("ccorral-%d-%d.scope", r, time.Now().UnixNano())
-			err = cfg.Mover.StartScope(name, fmt.Sprintf("ccorral: claude %d", r), outside)
+			desc := fmt.Sprintf("ccorral: claude %d", r)
+			err = cfg.Mover.StartScope(name, desc, outside)
+			if err != nil && len(outside) > 1 {
+				// A child may have exited since the scan and the batch is
+				// all-or-nothing: start with the root alone, then attach the
+				// rest (stragglers are left to the next sweep).
+				name = fmt.Sprintf("ccorral-%d-%d.scope", r, time.Now().UnixNano())
+				if err = cfg.Mover.StartScope(name, desc, []uint32{uint32(r)}); err == nil {
+					var rest []uint32
+					for _, p := range outside {
+						if p != uint32(r) {
+							rest = append(rest, p)
+						}
+					}
+					err = sweepAttach(cfg.Mover, name, rest)
+				}
+			}
 		}
 		if err != nil {
-			log.Printf("sweep: claude %d: moving %v: %v", r, outside, err)
+			log.Printf("sweep: claude %d: moving %d pids: %v", r, len(outside), err)
 		}
 	}
 	return nil

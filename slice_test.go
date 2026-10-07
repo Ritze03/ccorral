@@ -145,5 +145,16 @@ func TestSliceNoTopologyApplyNothing(t *testing.T) {
 	}
 }
 
+// Whatever goes wrong upstream, a non-green mode with no CPUs never reaches systemctl.
+func TestSliceApplyRefusesEmptyGroup(t *testing.T) {
+	b, calls := newTestSlice(t)
+	if err := b.apply(Config{Mode: modeRed}, nil); err == nil {
+		t.Error("apply(red, no CPUs) succeeded")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("systemctl ran: %v", *calls)
+	}
+}
+
 // The real runner is never used by the tests above.
 var _ sliceRunner = sliceSystemctl

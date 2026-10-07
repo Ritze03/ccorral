@@ -28,10 +28,17 @@ type sweepCall struct {
 type sweepFake struct {
 	calls []sweepCall
 	fail  map[uint32]bool // a call whose first pid is here fails
+	// failPid makes every call that includes the pid fail (a pid that died).
+	failPid uint32
 }
 
 func (f *sweepFake) rec(kind, unit string, pids []uint32) error {
 	f.calls = append(f.calls, sweepCall{kind, unit, pids})
+	for _, p := range pids {
+		if p == f.failPid {
+			return errors.New("no such process")
+		}
+	}
 	if f.fail[pids[0]] {
 		return errors.New("no such process")
 	}
@@ -65,7 +72,9 @@ func tsTree(t *testing.T, ps ...tsProc) string {
 	for _, p := range ps {
 		d := filepath.Join(root, fmt.Sprint(p.pid))
 		must(t, os.Mkdir(d, 0o755))
-		must(t, os.Symlink(p.exe, filepath.Join(d, "exe")))
+		if p.exe != "" { // "": exe unreadable
+			must(t, os.Symlink(p.exe, filepath.Join(d, "exe")))
+		}
 		// nasty comm: a space and a ")" inside
 		must(t, os.WriteFile(filepath.Join(d, "stat"),
 			[]byte(fmt.Sprintf("%d (a) b) S %d 1 1 0 -1 4194304 1 2 3\n", p.pid, p.ppid)), 0o644))
@@ -111,6 +120,72 @@ func TestSweepStragglerAttachesToRootUnit(t *testing.T) {
 		tsProc{102, 101, "/usr/bin/sleep", tsOut},
 	)
 	tsWant(t, f, sweepCall{"attach", "run-u1.scope", []uint32{102}})
+}
+
+func TestSweepAttachUsesUnitBelowSlice(t *testing.T) {
+	f := &sweepFake{}
+	tsRun(t, f,
+		tsProc{100, 1, tsClaud, tsIn + "/sub/deeper"},
+		tsProc{101, 100, "/usr/bin/sleep", tsOut},
+	)
+	tsWant(t, f, sweepCall{"attach", "run-u1.scope", []uint32{101}})
+}
+
+func TestSweepUnreadableExeKeepsDescendants(t *testing.T) {
+	f := &sweepFake{}
+	tsRun(t, f,
+		tsProc{100, 1, tsClaud, tsOut},
+		tsProc{101, 100, "", tsOut}, // setuid helper: exe unreadable
+		tsProc{102, 101, "/usr/bin/node", tsOut},
+		tsProc{300, 1, "", tsOut}, // never a root
+	)
+	tsWant(t, f, sweepCall{"scope", "", []uint32{100, 101, 102}})
+}
+
+// A pid that died after the scan fails the whole scope start: retry with the
+// root alone, then attach the rest to the new scope.
+func TestSweepBatchFailsRootOnlyRetry(t *testing.T) {
+	f := &sweepFake{failPid: 102}
+	tsRun(t, f,
+		tsProc{100, 1, tsClaud, tsOut},
+		tsProc{101, 100, "/usr/bin/zsh", tsOut},
+		tsProc{102, 101, "/usr/bin/gone", tsOut},
+		tsProc{103, 101, "/usr/bin/node", tsOut},
+	)
+	if len(f.calls) != 6 {
+		t.Fatalf("calls = %+v", f.calls)
+	}
+	if !reflect.DeepEqual(f.calls[0].pids, []uint32{100, 101, 102, 103}) || f.calls[0].kind != "scope" {
+		t.Errorf("first call %+v, want the full batch", f.calls[0])
+	}
+	if !reflect.DeepEqual(f.calls[1], sweepCall{"scope", "", []uint32{100}}) {
+		t.Errorf("second call %+v, want root-only scope", f.calls[1])
+	}
+	if c := f.calls[2]; c.kind != "attach" || !strings.HasPrefix(c.unit, "ccorral-100-") || !reflect.DeepEqual(c.pids, []uint32{101, 102, 103}) {
+		t.Errorf("third call %+v, want batch attach of the rest to the new scope", c)
+	}
+	// batch attach failed (102 is gone): per pid, 102 alone fails, the rest land.
+	for i, pid := range []uint32{101, 102, 103} {
+		if c := f.calls[3+i]; c.kind != "attach" || !reflect.DeepEqual(c.pids, []uint32{pid}) {
+			t.Errorf("call %d = %+v, want attach of %d", 3+i, c, pid)
+		}
+	}
+}
+
+func TestSweepAttachFallsBackPerPid(t *testing.T) {
+	f := &sweepFake{failPid: 102}
+	tsRun(t, f,
+		tsProc{100, 1, tsClaud, tsIn},
+		tsProc{101, 100, "/usr/bin/sleep", tsOut},
+		tsProc{102, 100, "/usr/bin/gone", tsOut},
+		tsProc{103, 100, "/usr/bin/sleep", tsOut},
+	)
+	tsWant(t, f,
+		sweepCall{"attach", "run-u1.scope", []uint32{101, 102, 103}},
+		sweepCall{"attach", "run-u1.scope", []uint32{101}},
+		sweepCall{"attach", "run-u1.scope", []uint32{102}},
+		sweepCall{"attach", "run-u1.scope", []uint32{103}},
+	)
 }
 
 func TestSweepLeavesNonClaudeAlone(t *testing.T) {

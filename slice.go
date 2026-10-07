@@ -17,7 +17,8 @@ import (
 	"time"
 )
 
-const sliceCallTimeout = 10 * time.Second
+// sliceCallTimeout stays under the IPC client's ipcTimeout (set-property is fast).
+const sliceCallTimeout = 4 * time.Second
 
 // sliceRunner runs systemctl with args. Tests replace it so nothing is exec'd.
 type sliceRunner func(args ...string) error
@@ -61,6 +62,9 @@ func (b *sliceBackend) apply(cfg Config, err error) error {
 		return err
 	}
 	group := cfg.Group(cfg.Mode)
+	if cfg.Mode != modeGreen && len(group) == 0 {
+		return fmt.Errorf("%s has no CPUs: refusing to clear the limit", cfg.Mode)
+	}
 	shown := group
 	if cfg.Mode == modeGreen {
 		cores, err := cpuCores(b.sysRoot)

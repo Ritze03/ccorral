@@ -64,6 +64,9 @@ func TestCpuParse(t *testing.T) {
 		{"1.5", nil, true},
 		{"0x3", nil, true},
 		{"+3", nil, true},
+		{"0-4000000000", nil, true},
+		{"4096", nil, true},
+		{"4095", []int{4095}, false},
 	}
 	for _, tt := range tests {
 		got, err := cpuParse(tt.in)

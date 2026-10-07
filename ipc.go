@@ -65,15 +65,9 @@ func SocketPath() string {
 
 // --- server ---------------------------------------------------------------
 
-// ServeIPC listens on path and serves requests until ctx is done, then returns
-// nil (the listener's Close unlinks the socket). It returns an error if another
-// daemon is already listening.
-func ServeIPC(ctx context.Context, b ipcBackend, path string) error {
-	ln, err := ipcListen(path)
-	if err != nil {
-		return err
-	}
-
+// ServeIPC serves requests on ln (from ipcListen) until ctx is done, then
+// returns nil (the listener's Close unlinks the socket).
+func ServeIPC(ctx context.Context, b ipcBackend, ln net.Listener) error {
 	var wg sync.WaitGroup
 	done := make(chan struct{})
 	closed := make(chan struct{})
@@ -83,8 +77,8 @@ func ServeIPC(ctx context.Context, b ipcBackend, path string) error {
 		case <-done:
 		}
 		// Close unlinks the socket: *net.UnixListener does that itself, so
-		// ServeIPC must never os.Remove(path) — by the time it returns, the
-		// path may already belong to a successor daemon.
+		// ServeIPC must never os.Remove the path — by the time it returns, it
+		// may already belong to a successor daemon.
 		ln.Close()
 		close(closed)
 	}()
@@ -109,7 +103,8 @@ func ServeIPC(ctx context.Context, b ipcBackend, path string) error {
 }
 
 // ipcListen binds path, clearing a stale socket but refusing to steal a live
-// one.
+// one. It is the single-instance guard and runs before the daemon starts
+// anything else.
 func ipcListen(path string) (net.Listener, error) {
 	if _, err := os.Stat(path); err == nil {
 		if c, derr := net.DialTimeout("unix", path, ipcProbeTimeout); derr == nil {

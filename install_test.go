@@ -139,7 +139,7 @@ func TestInstallFresh(t *testing.T) {
 	for _, line := range []string{
 		"[Unit]\nDescription=ccorral — pin Claude Code to CPUs\n",
 		"ExecStart=%h/.local/bin/ccorral daemon\n",
-		"Restart=on-failure\n",
+		"Restart=on-failure\nRestartSec=5\n",
 		"[Install]\nWantedBy=default.target\n",
 	} {
 		if !strings.Contains(readFile(t, f.env.unitPath()), line) {
@@ -412,6 +412,9 @@ func TestUninstall(t *testing.T) {
 	}
 	if !strings.Contains(out, "Left in place: "+f.env.slicePath()) {
 		t.Errorf("output does not say the slice is left:\n%s", out)
+	}
+	if !strings.Contains(out, "systemctl --user revert claude.slice") {
+		t.Errorf("output does not mention revert:\n%s", out)
 	}
 }
 

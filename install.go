@@ -31,6 +31,7 @@ Description=ccorral — pin Claude Code to CPUs
 [Service]
 ExecStart=%h/.local/bin/ccorral daemon
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=default.target
@@ -310,6 +311,7 @@ func uninstallRun(env installEnv, in io.Reader, out io.Writer) int {
 		fmt.Fprintf(out, "Removed %s\n", env.binPath())
 	}
 	fmt.Fprintf(out, "\nLeft in place: %s and the ccorral config.\n", env.slicePath())
+	fmt.Fprintln(out, "claude.slice keeps its current CPU limit until reboot; run 'systemctl --user revert claude.slice' to drop it now.")
 	return code
 }
 
