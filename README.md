@@ -4,7 +4,7 @@ Pins Claude Code CLI sessions, and everything they spawn (builds, tests, MCP ser
 chosen set of CPU cores, so the rest of the desktop stays responsive. Linux only.
 
 It works through `AllowedCPUs` on the systemd user slice `claude.slice`, so a change applies
-live to running sessions and their children. A daemon sweeps every 5 s and moves Claude
+live to running sessions and their children. A daemon sweeps every 5 s (configurable) and moves Claude
 sessions that were started outside the slice (tmux, other terminals, anything that doesn't use
 the wrapper below) into it. Claude is recognised by its executable under
 `~/.local/share/claude/versions/`.
@@ -27,11 +27,14 @@ The choice is saved in `~/.config/ccorral/config`:
 mode=yellow
 yellow=3-9,13-19
 red=7-9,17-19
+interval=5000
 ```
 
 `yellow=` and `red=` are optional cpulists you can set by hand; a missing or empty key means
-the computed default, and an invalid list is ignored with a log line. After editing the file,
-run `ccorral reload` so the daemon picks it up.
+the computed default, and an invalid list is ignored with a log line. `interval=` is the sweep
+interval in milliseconds, 500 to 10000, default 5000; anything else is ignored with a log line.
+After editing the file, run `ccorral reload` so the daemon picks it up. Or skip the editing and
+use `ccorral settings` (below).
 
 ## Requirements
 
@@ -87,6 +90,7 @@ keeps its CPU limit until reboot; `systemctl --user revert claude.slice` drops i
 ccorral                  # same as: ccorral status
 ccorral green            # or: yellow / red
 ccorral reload           # re-read the config file and re-apply it
+ccorral settings         # terminal UI for the cores per mode and the sweep interval
 ccorral daemon           # what the service runs
 ccorral help
 ```
@@ -114,13 +118,49 @@ claude() { systemd-run --user --scope --slice=claude.slice -q -- claude "$@"; }
 - Only cores are limited. There is no CPU or IO priority.
 - A process that set its own CPU affinity (e.g. with `taskset`) keeps it. Restart it.
 
-## Coming next
+## Tray icon
 
-Not there yet: a tray icon (green/yellow/red, click to cycle) and `ccorral settings`, a
-terminal UI to pick the cores per group.
+The daemon shows a tray icon: a round gauge, grey with a black outline, filled from the bottom
+in the colour of the current mode (green, yellow or red). The filled area is the share of CPUs
+Claude may use, so green is full, and with the example above yellow is 70% and red 30%. Hover
+for the tooltip, for example `ccorral — Yellow: 3-9,13-19`.
+
+- **Left click** cycles green, yellow, red, green, and so on.
+- **Menu** (right click, or whatever your host does) has three radio rows, one per mode, each
+  with its cores. Pick one to switch.
+
+It is a StatusNotifierItem, so it needs a tray host that speaks that protocol: Quickshell, KDE
+Plasma, waybar's tray module and the like. Without a host the daemon just logs it and carries
+on. The service usually starts before the tray host does; ccorral watches for the host and
+registers again when it appears or restarts. Switching the mode from the CLI or the menu
+updates the icon either way.
+
+## ccorral settings
+
+```sh
+ccorral settings
+```
+
+A full-screen terminal UI for the config file. It shows a grid with one column per physical
+core and a row each for Yellow and Red; `[x]` means the core is in that group. SMT siblings
+always toggle together, and the last core of a group can't be unchecked. The third row is the
+sweep interval, 500 to 10000 ms in 500 ms steps.
+
+| Key | Action |
+| --- | --- |
+| arrows or `h` `j` `k` `l` | move; on the Interval row left/right changes the value |
+| space or enter | toggle the core under the cursor |
+| `+` / `-` | change the interval |
+| `d` | reset the row to its default |
+| `q`, Esc | quit |
+
+Every change is saved to `~/.config/ccorral/config` right away and the daemon is told to
+reload, so it applies live; the status line says whether that worked. With no daemon running,
+the change is saved and applies when it starts. It needs a terminal. Switching the mode is not
+done here, use the tray or `ccorral green|yellow|red`.
 
 ## Layout
 
 A flat `package main` at the repo root, one file per area: `cpus.go`, `config.go`,
-`sweep.go`, `slice.go`, `ipc.go`, `install.go` and `main.go`. Tests sit next to them
+`sweep.go`, `slice.go`, `ipc.go`, `tray.go`, `settings.go`, `install.go` and `main.go`. Tests sit next to them
 (`go test ./...`).

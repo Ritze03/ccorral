@@ -20,6 +20,7 @@ usage:
   ccorral [status]              show the mode and cores
   ccorral green|yellow|red      switch mode (green = all CPUs)
   ccorral reload                re-read the config and re-apply it
+  ccorral settings              terminal UI: cores per mode, sweep interval
   ccorral daemon                run the daemon (systemd user unit ccorral.service)
   ccorral install               install the binary and the systemd user unit
   ccorral uninstall             remove them again`
@@ -46,6 +47,12 @@ func main() {
 			args = []string{"mode", cmd}
 		}
 		os.Exit(RunIPCClient(SocketPath(), args, os.Stdout))
+	case "settings":
+		if len(os.Args) > 2 {
+			fmt.Println(usage)
+			os.Exit(2)
+		}
+		os.Exit(RunSettings(os.Stdin, os.Stdout))
 	case "daemon":
 		os.Exit(runDaemon())
 	case "install":
@@ -59,7 +66,8 @@ func main() {
 }
 
 // runDaemon serves the IPC socket, applies the saved mode and sweeps until
-// SIGINT/SIGTERM. Only a failure to bind the socket is fatal.
+// SIGINT/SIGTERM. Only a failure to bind the socket is fatal; the tray icon is
+// best-effort.
 func runDaemon() int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -81,6 +89,9 @@ func runDaemon() int {
 			stop()
 		}
 	}()
+
+	// The tray is optional: it only logs on failure and never stops the daemon.
+	go RunTray(ctx, b)
 
 	// First sweep before Start: systemctl may be slow, and escaped sessions
 	// should not wait for it.
