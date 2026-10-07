@@ -5,9 +5,9 @@ package main
 // fallback and no desktop-specific code. Ported from ts6tray: same protocol,
 // same host quirks.
 //
-// The icon is a gauge (a circle filled to the share of CPUs the mode allows),
-// drawn in Go on every change and
-// shipped as ARGB32 pixmaps at 22/32/48 px. IconName stays empty on purpose,
+// The icon is a gauge (a circle filled to the share of CPUs the mode allows,
+// the rest transparent, outline black or white by theme), drawn in Go on every
+// change and shipped as ARGB32 pixmaps at 22/32/48 px. IconName stays empty on purpose,
 // because a host that sees a name prefers it and draws the theme's icon
 // instead of ours (see export()).
 //
@@ -154,9 +154,9 @@ func trayDisc(r float64) trayShape {
 	}
 }
 
-// The icon is a gauge: a circle with a black outline whose lower part is
-// filled with the mode colour like a liquid level, the rest light grey. The
-// filled share of the area is the share of the CPUs Claude may use.
+// The icon is a gauge: a circle with an outline (black, or white in the dark
+// theme) whose lower part is filled with the mode colour like a liquid level,
+// the rest transparent. The filled share of the area is the share of the CPUs Claude may use.
 const (
 	trayDotR      = 0.47 // outer radius, outline included
 	trayDotStroke = 0.08 // outline and level line thickness (1.75 px at 22)
@@ -164,12 +164,21 @@ const (
 )
 
 var (
-	trayGreen   = color.RGBA{0x00, 0xc0, 0x00, 0xff}
-	trayYellow  = color.RGBA{0xff, 0xd0, 0x00, 0xff}
-	trayRed     = color.RGBA{0xe0, 0x00, 0x00, 0xff}
-	trayEmpty   = color.RGBA{0xc0, 0xc0, 0xc0, 0xff} // the unfilled part
-	trayOutline = color.RGBA{0x00, 0x00, 0x00, 0xff}
+	trayGreen  = color.RGBA{0x00, 0xc0, 0x00, 0xff}
+	trayYellow = color.RGBA{0xff, 0xd0, 0x00, 0xff}
+	trayRed    = color.RGBA{0xe0, 0x00, 0x00, 0xff}
+	trayClear  = color.RGBA{} // the unfilled part: transparent
+	trayBlack  = color.RGBA{0x00, 0x00, 0x00, 0xff}
+	trayWhite  = color.RGBA{0xff, 0xff, 0xff, 0xff}
 )
+
+// trayOutlineFor is the outline and level line colour of a theme.
+func trayOutlineFor(theme string) color.RGBA {
+	if theme == themeDark {
+		return trayWhite
+	}
+	return trayBlack
+}
 
 // trayFillFor is the liquid colour of a mode.
 func trayFillFor(mode string) color.RGBA {
@@ -181,7 +190,7 @@ func trayFillFor(mode string) color.RGBA {
 	case "red":
 		return trayRed
 	}
-	return trayEmpty
+	return trayClear
 }
 
 // trayFraction is the share of all CPUs the snapshot's mode lets Claude use:
@@ -221,15 +230,16 @@ func trayLevel(frac float64) float64 {
 	return (lo + hi) / 2
 }
 
-// trayDraw renders the gauge for a mode with frac of it filled. Anti-aliasing
+// trayDraw renders the gauge for a mode with frac of it filled, outlined in
+// outline. Anti-aliasing
 // comes from the canvas oversampling.
 //
 // The level line sits just above the liquid, not centred on its edge, so it
 // never eats into the filled area and the area stays exactly frac.
-func trayDraw(n int, mode string, frac float64) *trayCanvas {
+func trayDraw(n int, mode string, frac float64, outline color.RGBA) *trayCanvas {
 	cv := trayNewCanvas(n)
-	cv.fill(trayDisc(trayDotR), trayOutline)
-	cv.fill(trayDisc(trayDotInner), trayEmpty)
+	cv.fill(trayDisc(trayDotR), outline)
+	cv.fill(trayDisc(trayDotInner), trayClear)
 	if mode == "" || frac <= 0 {
 		return cv
 	}
@@ -240,7 +250,7 @@ func trayDraw(n int, mode string, frac float64) *trayCanvas {
 	}
 	level := 0.5 - trayLevel(frac)*trayDotInner // y of the liquid's top edge, y grows downwards
 	cv.fill(func(x, y float64) bool { return y >= level && inner(x, y) }, trayFillFor(mode))
-	cv.fill(func(x, y float64) bool { return y < level && y >= level-trayDotStroke && inner(x, y) }, trayOutline)
+	cv.fill(func(x, y float64) bool { return y < level && y >= level-trayDotStroke && inner(x, y) }, outline)
 	return cv
 }
 
@@ -255,10 +265,10 @@ var traySizes = []int{22, 32, 48}
 // out here would alias the exported IconPixmap, and the next SetMust would
 // overwrite the cached artwork with the new icon.
 func trayPixmapsFor(s sliceSnapshot) []trayPixmap {
-	frac := trayFraction(s)
+	frac, outline := trayFraction(s), trayOutlineFor(s.Theme)
 	out := make([]trayPixmap, 0, len(traySizes))
 	for _, size := range traySizes {
-		out = append(out, trayDraw(size*trayOversample, s.Mode, frac).pixmap(size))
+		out = append(out, trayDraw(size*trayOversample, s.Mode, frac, outline).pixmap(size))
 	}
 	return out
 }
@@ -546,7 +556,7 @@ func (t *tray) sync() {
 	t.mu.Lock()
 	old, oldRows := t.snap, t.rows
 	first := oldRows == nil
-	iconChanged := first || old.Mode != snap.Mode || trayFraction(old) != trayFraction(snap)
+	iconChanged := first || old.Mode != snap.Mode || old.Theme != snap.Theme || trayFraction(old) != trayFraction(snap)
 	tipChanged := first || trayTitle(old) != trayTitle(snap)
 	menuChanged := first || !trayRowsEqual(oldRows, rows)
 	t.snap, t.rows = snap, rows

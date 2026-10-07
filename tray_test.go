@@ -42,7 +42,7 @@ func newFakeTrayBackend(mode string) *fakeTrayBackend {
 func (f *fakeTrayBackend) Snapshot() sliceSnapshot {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	s := sliceSnapshot{Mode: f.snap.Mode, Cores: map[string]string{}}
+	s := sliceSnapshot{Mode: f.snap.Mode, Theme: f.snap.Theme, Cores: map[string]string{}}
 	for k, v := range f.snap.Cores {
 		s.Cores[k] = v
 	}
@@ -62,6 +62,17 @@ func (f *fakeTrayBackend) SetMode(mode string) error {
 func (f *fakeTrayBackend) set(mode string) {
 	f.mu.Lock()
 	f.snap.Mode = mode
+	f.mu.Unlock()
+	select {
+	case f.changed <- struct{}{}:
+	default:
+	}
+}
+
+// setTheme changes the theme as a reload of an edited config would.
+func (f *fakeTrayBackend) setTheme(theme string) {
+	f.mu.Lock()
+	f.snap.Theme = theme
 	f.mu.Unlock()
 	select {
 	case f.changed <- struct{}{}:
@@ -154,13 +165,13 @@ func TestTrayFraction(t *testing.T) {
 
 // TestTrayDrawAreas samples a large canvas: the liquid must cover frac of the
 // inner disc (the level line does not eat into it), be the mode's colour at
-// the bottom and light grey at the top.
+// the bottom and transparent at the top.
 func TestTrayDrawAreas(t *testing.T) {
 	const n = 600
 	inner := trayDisc(trayDotInner)
 	for _, mode := range []string{"green", "yellow", "red"} {
 		for _, frac := range []float64{0.1, 0.3, 0.5, 0.7, 0.9, 1} {
-			cv := trayDraw(n, mode, frac)
+			cv := trayDraw(n, mode, frac, trayBlack)
 			var disc, liquid int
 			for yi := 0; yi < n; yi++ {
 				for xi := 0; xi < n; xi++ {
@@ -202,39 +213,49 @@ func px(t *testing.T, s sliceSnapshot, size, x, y int) [4]byte {
 func argb(c color.RGBA) [4]byte { return [4]byte{c.A, c.R, c.G, c.B} }
 
 // TestTrayPixmapSamples: in the real pixmaps (ARGB order) a pixel near the
-// bottom is the mode colour, one near the top light grey (green is full, so
-// green is the exception, and "not applied yet" is grey throughout), the
-// outline is black and the corner transparent.
+// bottom is the mode colour, one near the top fully transparent (green is
+// full, so green is the exception), "not applied yet" is the outline only, the
+// outline follows the theme and the corner is transparent.
 func TestTrayPixmapSamples(t *testing.T) {
-	for _, size := range []int{22, 32, 48} {
-		x, bottom, top := size/2, size*83/100, size*17/100
-		for _, c := range []struct {
-			mode       string
-			bot, upper color.RGBA
-		}{
-			{"green", trayGreen, trayGreen},
-			{"yellow", trayYellow, trayEmpty},
-			{"red", trayRed, trayEmpty},
-			{"", trayEmpty, trayEmpty},
-		} {
-			s := snapOf(c.mode)
-			if got := px(t, s, size, x, bottom); got != argb(c.bot) {
-				t.Errorf("%q %d px: bottom = %x, want %x", c.mode, size, got, argb(c.bot))
-			}
-			if got := px(t, s, size, x, top); got != argb(c.upper) {
-				t.Errorf("%q %d px: top = %x, want %x", c.mode, size, got, argb(c.upper))
-			}
-			if got := px(t, s, size, 0, 0); got[0] != 0 {
-				t.Errorf("%q %d px: corner alpha = %#x, want transparent", c.mode, size, got[0])
-			}
-			// From the left edge on the middle row, the first visible pixel is
-			// the (anti-aliased) black outline.
-			for xx := 0; xx < size; xx++ {
-				if p := px(t, s, size, xx, size/2); p[0] != 0 {
-					if p[1] > 0x40 || p[2] > 0x40 || p[3] > 0x40 {
-						t.Errorf("%q %d px: outermost pixel = %x, want black", c.mode, size, p)
+	for _, theme := range []string{themeLight, themeDark} {
+		ink := trayBlack
+		if theme == themeDark {
+			ink = trayWhite
+		}
+		for _, size := range []int{22, 32, 48} {
+			x, bottom, top := size/2, size*83/100, size*17/100
+			for _, c := range []struct {
+				mode       string
+				bot, upper color.RGBA
+			}{
+				{"green", trayGreen, trayGreen},
+				{"yellow", trayYellow, trayClear},
+				{"red", trayRed, trayClear},
+				{"", trayClear, trayClear},
+			} {
+				s := snapOf(c.mode)
+				s.Theme = theme
+				if got := px(t, s, size, x, bottom); got != argb(c.bot) {
+					t.Errorf("%s %q %d px: bottom = %x, want %x", theme, c.mode, size, got, argb(c.bot))
+				}
+				if got := px(t, s, size, x, top); got != argb(c.upper) {
+					t.Errorf("%s %q %d px: top = %x, want %x", theme, c.mode, size, got, argb(c.upper))
+				}
+				if got := px(t, s, size, 0, 0); got[0] != 0 {
+					t.Errorf("%s %q %d px: corner alpha = %#x, want transparent", theme, c.mode, size, got[0])
+				}
+				// From the left edge on the middle row, the first visible
+				// pixel is the (anti-aliased) outline in the theme's colour.
+				for xx := 0; xx < size; xx++ {
+					if p := px(t, s, size, xx, size/2); p[0] != 0 {
+						for _, ch := range p[1:] {
+							if d := int(ch) - int(ink.R); d > 0x40 || d < -0x40 {
+								t.Errorf("%s %q %d px: outermost pixel = %x, want %x", theme, c.mode, size, p, argb(ink))
+								break
+							}
+						}
+						break
 					}
-					break
 				}
 			}
 		}
@@ -247,6 +268,55 @@ func TestTrayPixmapSamples(t *testing.T) {
 				t.Errorf("%q and %q render identically", a, b)
 			}
 		}
+	}
+}
+
+// TestTrayThemeOutline: the outline and the level line are black for light
+// (also the default, "") and white for dark; "" mode is the outline circle
+// alone, so its inside stays empty; the themes differ.
+func TestTrayThemeOutline(t *testing.T) {
+	const n = 600
+	for _, theme := range []string{"", themeLight, themeDark} {
+		ink := trayBlack
+		if theme == themeDark {
+			ink = trayWhite
+		}
+		if got := trayOutlineFor(theme); got != ink {
+			t.Errorf("outline(%q) = %v, want %v", theme, got, ink)
+		}
+		// Outline ring: 0.43 is between the inner (0.39) and outer (0.47) radius.
+		cv := trayDraw(n, "yellow", 0.7, ink)
+		ring := (n/2)*n + n*7/100
+		if cv.px[ring] != ink {
+			t.Errorf("%q: ring sample = %v, want outline", theme, cv.px[ring])
+		}
+		// Level line: just above the liquid's top edge on the centre column.
+		level := 0.5 - trayLevel(0.7)*trayDotInner
+		if got := cv.px[int((level-trayDotStroke/2)*n)*n+n/2]; got != ink {
+			t.Errorf("%q: level line sample = %v, want outline colour", theme, got)
+		}
+		// "" mode: nothing but the ring.
+		cv = trayDraw(n, "", 0, ink)
+		for yi := 0; yi < n; yi++ {
+			for xi := 0; xi < n; xi++ {
+				d := math.Hypot((float64(xi)+0.5)/n-0.5, (float64(yi)+0.5)/n-0.5)
+				if math.Abs(d-trayDotInner) < 0.002 || math.Abs(d-trayDotR) < 0.002 {
+					continue // boundary samples: rounding
+				}
+				want := trayClear
+				if d > trayDotInner && d < trayDotR {
+					want = ink
+				}
+				if cv.px[yi*n+xi] != want {
+					t.Fatalf("%q: empty gauge sample (%d,%d) = %v, want %v", theme, xi, yi, cv.px[yi*n+xi], want)
+				}
+			}
+		}
+	}
+	light, dark := snapOf("yellow"), snapOf("yellow")
+	dark.Theme = themeDark
+	if pixmapsEqual(trayPixmapsFor(light), trayPixmapsFor(dark)) {
+		t.Error("light and dark render identically")
 	}
 }
 
@@ -515,6 +585,21 @@ func TestTraySyncUpdatesAndSignals(t *testing.T) {
 	tr.sync()
 	if calls := got(); len(calls) != 0 {
 		t.Errorf("emitted %v on an unchanged snapshot", names(calls))
+	}
+}
+
+// TestTraySyncThemeOnly: a theme change alone redraws the icon, and nothing
+// else (title, tooltip and menu text do not depend on it).
+func TestTraySyncThemeOnly(t *testing.T) {
+	tr, b, got := newTestTray(t, "yellow")
+	b.setTheme(themeDark)
+	<-b.Changed()
+	tr.sync()
+	if want := []string{trayItemIface + ".NewIcon"}; !reflect.DeepEqual(names(got()), want) {
+		t.Errorf("emitted something other than %v", want)
+	}
+	if tr.snap.Theme != themeDark {
+		t.Errorf("snap theme = %q", tr.snap.Theme)
 	}
 }
 

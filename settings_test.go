@@ -53,6 +53,7 @@ func TestSettingsLoadAndRender(t *testing.T) {
 		"Yellow   [ ][ ][ ][x][x][x][x][x][x][x]   3-9,13-19",
 		"Red      [ ][ ][ ][ ][ ][ ][ ][x][x][x]   7-9,17-19",
 		"Interval 5000 ms   (500–10000)",
+		"Theme    light (black outline)",
 		settingsHint,
 	} {
 		if !strings.Contains(out, want) {
@@ -91,8 +92,8 @@ func TestSettingsMove(t *testing.T) {
 	if s.col != 9 {
 		t.Errorf("col %d, want it stopped at the last core (9)", s.col)
 	}
-	s, act := press(s, "down", "down", "down")
-	if s.row != settingsRowInterval || act != settingsActNone || s.col != 9 {
+	s, act := press(s, "down", "down", "down", "down")
+	if s.row != settingsRowTheme || act != settingsActNone || s.col != 9 {
 		t.Errorf("row %d col %d act %d", s.row, s.col, act)
 	}
 }
@@ -354,5 +355,51 @@ func TestRunSettingsNotATerminal(t *testing.T) {
 	var out strings.Builder
 	if code := RunSettings(strings.NewReader(""), &out); code != 1 || !strings.Contains(out.String(), "needs a terminal") {
 		t.Errorf("code %d out %q", code, out.String())
+	}
+}
+
+func TestSettingsTheme(t *testing.T) {
+	s, path, sys := settingsFixture(t)
+	s.row = settingsRowTheme
+	if s.theme != themeLight {
+		t.Fatalf("default theme %q", s.theme)
+	}
+	for _, k := range []string{"right", "toggle", "left"} { // dark, light, dark
+		var act settingsAct
+		s, act = press(s, k)
+		if act != settingsActWrite {
+			t.Errorf("%s: act %d", k, act)
+		}
+	}
+	if s.theme != themeDark || !strings.Contains(plain(settingsRender(s)), "Theme    dark (white outline)") {
+		t.Errorf("theme %q:\n%s", s.theme, plain(settingsRender(s)))
+	}
+	// inc/dec are for the interval only.
+	if n, act := press(s, "inc"); n.theme != themeDark || act != settingsActNone {
+		t.Errorf("inc: theme %q act %d", n.theme, act)
+	}
+	// Saved immediately, reload sent, and a fresh process sees it.
+	calls := 0
+	reload := func() error { calls++; return nil }
+	s, act := press(s, "toggle", "toggle") // light, dark
+	s = settingsSave(path, sys, s, act, reload)
+	if got := readCfg(t, path); got != "theme=dark\n" || calls != 1 || s.status != settingsReloadedOK {
+		t.Errorf("config %q calls %d status %q", got, calls, s.status)
+	}
+	if n, err := settingsLoad(path, sys); err != nil || n.theme != themeDark {
+		t.Errorf("reload from disk: %+v err %v", n, err)
+	}
+	// d resets to light and saves it.
+	s, act = press(s, "default")
+	if s.theme != themeLight || act != settingsActReset {
+		t.Fatalf("default: theme %q act %d", s.theme, act)
+	}
+	settingsSave(path, sys, s, act, reload)
+	if got := readCfg(t, path); got != "theme=light\n" || calls != 2 {
+		t.Errorf("config %q calls %d", got, calls)
+	}
+	// The cursor can't go past the theme row.
+	if s, _ = press(s, "down", "down"); s.row != settingsRowTheme {
+		t.Errorf("row %d", s.row)
 	}
 }

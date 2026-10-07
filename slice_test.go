@@ -181,7 +181,7 @@ func TestSliceSnapshot(t *testing.T) {
 	if err := b.SetMode(modeRed); err != nil {
 		t.Fatal(err)
 	}
-	want := sliceSnapshot{Mode: modeRed, Cores: map[string]string{
+	want := sliceSnapshot{Mode: modeRed, Theme: themeLight, Cores: map[string]string{
 		"green": "0-19", "yellow": "3-9,13-19", "red": "7-9,17-19",
 	}}
 	got := b.Snapshot()
@@ -281,5 +281,33 @@ func TestSliceIntervalChanged(t *testing.T) {
 	writeCfg(t, b.path, "interval=800\n")
 	if err := b.Reload(); err != nil || !nudged() {
 		t.Error("no nudge after interval change")
+	}
+}
+
+// TestSliceThemeReload: the snapshot carries the theme from the config, and a
+// reload that changes only the theme still signals Changed.
+func TestSliceThemeReload(t *testing.T) {
+	b, _ := newTestSlice(t)
+	ch := b.Changed()
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	<-ch
+	if got := b.Snapshot().Theme; got != themeLight {
+		t.Errorf("default theme = %q", got)
+	}
+	if err := configSetTheme(b.path, themeDark); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ch:
+	default:
+		t.Error("no Changed after a theme-only reload")
+	}
+	if got := b.Snapshot().Theme; got != themeDark {
+		t.Errorf("theme after reload = %q", got)
 	}
 }

@@ -62,13 +62,14 @@ type sliceBackend struct {
 type sliceSnapshot struct {
 	Mode  string            // "green" | "yellow" | "red" ("" before first successful apply)
 	Cores map[string]string // "green","yellow","red" -> cpulist, e.g. "3-9,13-19"
+	Theme string            // themeLight | themeDark ("" before first successful apply)
 }
 
 // Snapshot is a copy of the state after the last successful apply.
 func (b *sliceBackend) Snapshot() sliceSnapshot {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	s := sliceSnapshot{Mode: b.snap.Mode, Cores: map[string]string{}}
+	s := sliceSnapshot{Mode: b.snap.Mode, Theme: b.snap.Theme, Cores: map[string]string{}}
 	for k, v := range b.snap.Cores {
 		s.Cores[k] = v
 	}
@@ -139,7 +140,7 @@ func (b *sliceBackend) apply(cfg Config, err error) error {
 		return err
 	}
 	b.applied = cfg.Mode + " " + cpuFormat(group)
-	b.snap = sliceSnapshot{Mode: cfg.Mode, Cores: map[string]string{
+	b.snap = sliceSnapshot{Mode: cfg.Mode, Theme: cfg.Theme, Cores: map[string]string{
 		modeGreen: cpuFormat(all), modeYellow: cpuFormat(cfg.Yellow), modeRed: cpuFormat(cfg.Red),
 	}}
 	select {

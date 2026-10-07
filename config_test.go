@@ -234,3 +234,60 @@ func TestConfigSetInterval(t *testing.T) {
 		t.Errorf("config = %q", got)
 	}
 }
+
+func TestConfigTheme(t *testing.T) {
+	sys := fakeSys(t, smt10())
+	for _, tt := range []struct {
+		file    string
+		want    string
+		wantLog bool
+	}{
+		{"", themeLight, false},
+		{"theme=\n", themeLight, false},
+		{"theme=light\n", themeLight, false},
+		{"theme = dark\n", themeDark, false},
+		{"theme=Dark\n", themeLight, true},
+		{"theme=blue\n", themeLight, true},
+	} {
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		path := cfgPath(t)
+		writeCfg(t, path, tt.file)
+		c, err := configLoad(path, sys)
+		log.SetOutput(os.Stderr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Theme != tt.want {
+			t.Errorf("%q: Theme = %q, want %q", tt.file, c.Theme, tt.want)
+		}
+		if got := strings.Contains(buf.String(), "config: ignoring theme="); got != tt.wantLog {
+			t.Errorf("%q: logged = %v (%q)", tt.file, got, buf.String())
+		}
+	}
+	// Also set when the topology is unreadable.
+	if c, err := configLoad(cfgPath(t), t.TempDir()); err == nil || c.Theme != themeLight {
+		t.Errorf("no topology: %+v, %v", c, err)
+	}
+}
+
+func TestConfigSetTheme(t *testing.T) {
+	path := cfgPath(t)
+	writeCfg(t, path, "mode=red\n")
+	for _, th := range []string{"", "Dark", "blue"} {
+		if err := configSetTheme(path, th); err == nil || !strings.Contains(err.Error(), "unknown theme") {
+			t.Errorf("configSetTheme(%q) = %v, want error", th, err)
+		}
+	}
+	if got := readCfg(t, path); got != "mode=red\n" {
+		t.Errorf("file changed by rejected sets: %q", got)
+	}
+	for _, th := range []string{themeDark, themeLight, themeDark} {
+		if err := configSetTheme(path, th); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := readCfg(t, path); got != "mode=red\ntheme=dark\n" {
+		t.Errorf("config = %q", got)
+	}
+}

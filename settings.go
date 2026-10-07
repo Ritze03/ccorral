@@ -1,7 +1,7 @@
 package main
 
 // settings.go is `ccorral settings`: a small full-screen terminal UI over the
-// config file (config.go) for the two core groups and the sweep interval. Mode
+// config file (config.go) for the two core groups, the sweep interval and the icon theme. Mode
 // switching is not here; that is the tray and `ccorral green|yellow|red`.
 //
 // It is a separate, short-lived process on purpose: every change is written
@@ -52,6 +52,7 @@ const (
 	settingsRowYellow = iota
 	settingsRowRed
 	settingsRowInterval
+	settingsRowTheme
 	settingsRows
 )
 
@@ -66,6 +67,7 @@ type settingsState struct {
 	cores       [][]int
 	yellow, red []int
 	interval    int
+	theme       string // themeLight or themeDark
 	row, col    int
 	status      string
 }
@@ -80,7 +82,7 @@ func settingsLoad(path, sysRoot string) (settingsState, error) {
 	if err != nil {
 		return settingsState{}, err
 	}
-	return settingsState{cores: cores, yellow: c.Yellow, red: c.Red, interval: c.IntervalMs}, nil
+	return settingsState{cores: cores, yellow: c.Yellow, red: c.Red, interval: c.IntervalMs, theme: c.Theme}, nil
 }
 
 // group is the CPU list of the group row r.
@@ -135,6 +137,13 @@ func settingsRender(s settingsState) string {
 	b.WriteString(cur(s.row == settingsRowInterval, fmt.Sprintf("%d ms", s.interval)))
 	fmt.Fprintf(&b, "   (%d–%d)\n", intervalMin, intervalMax)
 
+	theme := "light (black outline)"
+	if s.theme == themeDark {
+		theme = "dark (white outline)"
+	}
+	fmt.Fprintf(&b, "  %-9s", "Theme")
+	b.WriteString(cur(s.row == settingsRowTheme, theme) + "\n")
+
 	b.WriteString("\n  " + settingsHint + "\n")
 	b.WriteString("  " + s.status + "\n")
 	return b.String()
@@ -173,8 +182,11 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 		if key == "left" {
 			step = -1
 		}
-		if s.row == settingsRowInterval {
+		switch s.row {
+		case settingsRowInterval:
 			return settingsStep(s, step)
+		case settingsRowTheme:
+			return settingsTheme(s)
 		}
 		if c := s.col + step; c >= 0 && c < len(s.cores) {
 			s.col = c
@@ -188,7 +200,11 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 			return settingsStep(s, step)
 		}
 	case "toggle":
-		if s.row != settingsRowInterval {
+		switch s.row {
+		case settingsRowTheme:
+			return settingsTheme(s)
+		case settingsRowInterval:
+		default:
 			return settingsToggle(s)
 		}
 	case "default":
@@ -198,12 +214,24 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 			s.yellow = yellow
 		case settingsRowRed:
 			s.red = red
-		default:
+		case settingsRowInterval:
 			s.interval = intervalDefault
+		default:
+			s.theme = themeLight
 		}
 		return s, settingsActReset
 	}
 	return s, settingsActNone
+}
+
+// settingsTheme flips between the two themes.
+func settingsTheme(s settingsState) (settingsState, settingsAct) {
+	if s.theme == themeDark {
+		s.theme = themeLight
+	} else {
+		s.theme = themeDark
+	}
+	return s, settingsActWrite
 }
 
 // settingsStep moves the interval one step, clamped to the allowed range.
@@ -257,6 +285,8 @@ func settingsSave(path, sysRoot string, s settingsState, act settingsAct, reload
 	switch {
 	case s.row == settingsRowInterval:
 		err = configSetInterval(path, s.interval)
+	case s.row == settingsRowTheme:
+		err = configSetTheme(path, s.theme)
 	case act == settingsActReset:
 		err = configResetGroup(path, settingsGroupNames[s.row])
 	default:

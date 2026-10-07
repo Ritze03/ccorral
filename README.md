@@ -28,11 +28,13 @@ mode=yellow
 yellow=3-9,13-19
 red=7-9,17-19
 interval=5000
+theme=light
 ```
 
 `yellow=` and `red=` are optional cpulists you can set by hand; a missing or empty key means
 the computed default, and an invalid list is ignored with a log line. `interval=` is the sweep
-interval in milliseconds, 500 to 10000, default 5000; anything else is ignored with a log line.
+interval in milliseconds, 500 to 10000, default 5000; anything else is ignored with a log line. `theme=` is the tray icon's outline: `light` (default,
+black, for light panels) or `dark` (white, for dark panels); anything else is ignored with a log line.
 After editing the file, run `ccorral reload` so the daemon picks it up. Or skip the editing and
 use `ccorral settings` (below).
 
@@ -92,7 +94,7 @@ keeps its CPU limit until reboot; `systemctl --user revert claude.slice` drops i
 ccorral                  # same as: ccorral status
 ccorral green            # or: yellow / red
 ccorral reload           # re-read the config file and re-apply it
-ccorral settings         # terminal UI for the cores per mode and the sweep interval
+ccorral settings         # terminal UI for the cores per mode, the sweep interval and the icon theme
 ccorral daemon           # what the service runs
 ccorral help
 ```
@@ -122,9 +124,10 @@ claude() { systemd-run --user --scope --slice=claude.slice -q -- claude "$@"; }
 
 ## Tray icon
 
-The daemon shows a tray icon: a round gauge, grey with a black outline, filled from the bottom
-in the colour of the current mode (green, yellow or red). The filled area is the share of CPUs
-Claude may use, so green is full, and with the example above yellow is 70% and red 30%. Hover
+The daemon shows a tray icon: a round gauge, an outline with a transparent inside, filled from
+the bottom in the colour of the current mode (green, yellow or red). The outline is black for
+`theme=light` and white for `theme=dark`; before the first apply it is just the empty outline. The filled
+area is the share of CPUs Claude may use, so green is full, and with the example above yellow is 70% and red 30%. Hover
 for the tooltip, for example `ccorral — Yellow: 3-9,13-19`.
 
 - **Left click** cycles green, yellow, red, green, and so on.
@@ -146,12 +149,13 @@ ccorral settings
 A full-screen terminal UI for the config file. It shows a grid with one column per physical
 core and a row each for Yellow and Red; `[x]` means the core is in that group. SMT siblings
 always toggle together, and the last core of a group can't be unchecked. The third row is the
-sweep interval, 500 to 10000 ms in 500 ms steps.
+sweep interval, 500 to 10000 ms in 500 ms steps. The fourth is the icon theme, `light (black
+outline)` or `dark (white outline)`.
 
 | Key | Action |
 | --- | --- |
-| arrows or `h` `j` `k` `l` | move; on the Interval row left/right changes the value |
-| space or enter | toggle the core under the cursor |
+| arrows or `h` `j` `k` `l` | move; on the Interval row left/right changes the value, on the Theme row it toggles |
+| space or enter | toggle the core under the cursor, or the theme |
 | `+` / `-` | change the interval |
 | `d` | reset the row to its default |
 | `q`, Esc | quit |

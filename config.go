@@ -10,6 +10,7 @@ package main
 //	yellow=<cpulist>
 //	red=<cpulist>
 //	interval=<ms>
+//	theme=light|dark
 //
 // green means no limit, yellow and red mean "pin to that group". A missing or
 // empty group key means the default computed from the topology (cpuDefaults).
@@ -29,6 +30,12 @@ const (
 	modeGreen  = "green"
 	modeYellow = "yellow"
 	modeRed    = "red"
+)
+
+// Tray icon theme: the outline colour. light is for light panels.
+const (
+	themeLight = "light" // black outline (default)
+	themeDark  = "dark"  // white outline
 )
 
 // Sweep interval in milliseconds: the allowed range and the default.
@@ -58,7 +65,8 @@ type Config struct {
 	Yellow, Red    []int  // explicit or default
 	YellowExplicit bool   // false: Yellow is the computed default
 	RedExplicit    bool
-	IntervalMs     int // sweep interval, intervalMin..intervalMax
+	IntervalMs     int    // sweep interval, intervalMin..intervalMax
+	Theme          string // themeLight or themeDark
 }
 
 // Group is the CPU set a mode pins to; nil for green (no limit).
@@ -155,7 +163,7 @@ func configSet(path, key, value string) error {
 // the topology failing, in which case the groups are nil.
 func configLoad(path, sysRoot string) (Config, error) {
 	kv := configKV(path)
-	c := Config{Mode: modeYellow, IntervalMs: intervalDefault}
+	c := Config{Mode: modeYellow, IntervalMs: intervalDefault, Theme: themeLight}
 	switch kv["mode"] {
 	case modeGreen, modeYellow, modeRed:
 		c.Mode = kv["mode"]
@@ -166,6 +174,13 @@ func configLoad(path, sysRoot string) (Config, error) {
 		} else {
 			log.Printf("config: ignoring interval=%q: want an integer from %d to %d ms", v, intervalMin, intervalMax)
 		}
+	}
+	switch v := kv["theme"]; v {
+	case "", themeLight:
+	case themeDark:
+		c.Theme = v
+	default:
+		log.Printf("config: ignoring theme=%q: want %s or %s", v, themeLight, themeDark)
 	}
 	cores, err := cpuCores(sysRoot)
 	if err != nil {
@@ -237,4 +252,13 @@ func configSetInterval(path string, ms int) error {
 		return fmt.Errorf("interval %d ms out of range %d-%d", ms, intervalMin, intervalMax)
 	}
 	return configSet(path, "interval", strconv.Itoa(ms))
+}
+
+// configSetTheme persists the tray icon theme.
+func configSetTheme(path, theme string) error {
+	switch theme {
+	case themeLight, themeDark:
+		return configSet(path, "theme", theme)
+	}
+	return fmt.Errorf("unknown theme %q", theme)
 }
