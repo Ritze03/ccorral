@@ -28,13 +28,13 @@ mode=yellow
 yellow=3-9,13-19
 red=7-9,17-19
 interval=5000
-theme=light
+theme=dark
 ```
 
 `yellow=` and `red=` are optional cpulists you can set by hand; a missing or empty key means
 the computed default, and an invalid list is ignored with a log line. `interval=` is the sweep
-interval in milliseconds, 500 to 10000, default 5000; anything else is ignored with a log line. `theme=` is the tray icon's outline: `light` (default,
-black, for light panels) or `dark` (white, for dark panels); anything else is ignored with a log line.
+interval in milliseconds, 500 to 10000, default 5000; anything else is ignored with a log line. `theme=` is the tray icon's outline: `dark` (default,
+white, for dark panels) or `light` (black, for light panels); anything else is ignored with a log line.
 After editing the file, run `ccorral reload` so the daemon picks it up. Or skip the editing and
 use `ccorral settings` (below).
 
@@ -125,8 +125,8 @@ claude() { systemd-run --user --scope --slice=claude.slice -q -- claude "$@"; }
 ## Tray icon
 
 The daemon shows a tray icon: a round gauge, an outline with a transparent inside, filled from
-the bottom in the colour of the current mode (green, yellow or red). The outline is black for
-`theme=light` and white for `theme=dark`; before the first apply it is just the empty outline. The filled
+the bottom in the colour of the current mode (green, yellow or red). The outline is white for
+`theme=dark` (default) and black for `theme=light`; before the first apply it is just the empty outline. The filled
 area is the share of CPUs Claude may use, so green is full, and with the example above yellow is 70% and red 30%. Hover
 for the tooltip, for example `ccorral — Yellow: 3-9,13-19`.
 
@@ -149,8 +149,8 @@ ccorral settings
 A full-screen terminal UI for the config file. It shows a grid with one column per physical
 core and a row each for Yellow and Red; `[x]` means the core is in that group. SMT siblings
 always toggle together, and the last core of a group can't be unchecked. The third row is the
-sweep interval, 500 to 10000 ms in 500 ms steps. The fourth is the icon theme, `light (black
-outline)` or `dark (white outline)`.
+sweep interval, 500 to 10000 ms in 500 ms steps. The fourth is the icon theme, `dark (white
+outline)` (default) or `light (black outline)`.
 
 | Key | Action |
 | --- | --- |

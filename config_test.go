@@ -242,12 +242,12 @@ func TestConfigTheme(t *testing.T) {
 		want    string
 		wantLog bool
 	}{
-		{"", themeLight, false},
-		{"theme=\n", themeLight, false},
+		{"", themeDark, false},
+		{"theme=\n", themeDark, false},
 		{"theme=light\n", themeLight, false},
 		{"theme = dark\n", themeDark, false},
-		{"theme=Dark\n", themeLight, true},
-		{"theme=blue\n", themeLight, true},
+		{"theme=Dark\n", themeDark, true},
+		{"theme=blue\n", themeDark, true},
 	} {
 		var buf bytes.Buffer
 		log.SetOutput(&buf)
@@ -266,7 +266,7 @@ func TestConfigTheme(t *testing.T) {
 		}
 	}
 	// Also set when the topology is unreadable.
-	if c, err := configLoad(cfgPath(t), t.TempDir()); err == nil || c.Theme != themeLight {
+	if c, err := configLoad(cfgPath(t), t.TempDir()); err == nil || c.Theme != themeDark {
 		t.Errorf("no topology: %+v, %v", c, err)
 	}
 }

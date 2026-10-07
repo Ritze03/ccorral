@@ -217,7 +217,7 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 		case settingsRowInterval:
 			s.interval = intervalDefault
 		default:
-			s.theme = themeLight
+			s.theme = themeDark
 		}
 		return s, settingsActReset
 	}

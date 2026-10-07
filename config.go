@@ -10,7 +10,7 @@ package main
 //	yellow=<cpulist>
 //	red=<cpulist>
 //	interval=<ms>
-//	theme=light|dark
+//	theme=dark|light
 //
 // green means no limit, yellow and red mean "pin to that group". A missing or
 // empty group key means the default computed from the topology (cpuDefaults).
@@ -34,8 +34,8 @@ const (
 
 // Tray icon theme: the outline colour. light is for light panels.
 const (
-	themeLight = "light" // black outline (default)
-	themeDark  = "dark"  // white outline
+	themeLight = "light" // black outline
+	themeDark  = "dark"  // white outline (default)
 )
 
 // Sweep interval in milliseconds: the allowed range and the default.
@@ -163,7 +163,7 @@ func configSet(path, key, value string) error {
 // the topology failing, in which case the groups are nil.
 func configLoad(path, sysRoot string) (Config, error) {
 	kv := configKV(path)
-	c := Config{Mode: modeYellow, IntervalMs: intervalDefault, Theme: themeLight}
+	c := Config{Mode: modeYellow, IntervalMs: intervalDefault, Theme: themeDark}
 	switch kv["mode"] {
 	case modeGreen, modeYellow, modeRed:
 		c.Mode = kv["mode"]
@@ -176,8 +176,8 @@ func configLoad(path, sysRoot string) (Config, error) {
 		}
 	}
 	switch v := kv["theme"]; v {
-	case "", themeLight:
-	case themeDark:
+	case "", themeDark:
+	case themeLight:
 		c.Theme = v
 	default:
 		log.Printf("config: ignoring theme=%q: want %s or %s", v, themeLight, themeDark)

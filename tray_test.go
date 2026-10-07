@@ -218,9 +218,9 @@ func argb(c color.RGBA) [4]byte { return [4]byte{c.A, c.R, c.G, c.B} }
 // outline follows the theme and the corner is transparent.
 func TestTrayPixmapSamples(t *testing.T) {
 	for _, theme := range []string{themeLight, themeDark} {
-		ink := trayBlack
-		if theme == themeDark {
-			ink = trayWhite
+		ink := trayWhite
+		if theme == themeLight {
+			ink = trayBlack
 		}
 		for _, size := range []int{22, 32, 48} {
 			x, bottom, top := size/2, size*83/100, size*17/100
@@ -271,15 +271,15 @@ func TestTrayPixmapSamples(t *testing.T) {
 	}
 }
 
-// TestTrayThemeOutline: the outline and the level line are black for light
-// (also the default, "") and white for dark; "" mode is the outline circle
+// TestTrayThemeOutline: the outline and the level line are white for dark
+// (also the default, "") and black for light; "" mode is the outline circle
 // alone, so its inside stays empty; the themes differ.
 func TestTrayThemeOutline(t *testing.T) {
 	const n = 600
 	for _, theme := range []string{"", themeLight, themeDark} {
-		ink := trayBlack
-		if theme == themeDark {
-			ink = trayWhite
+		ink := trayWhite
+		if theme == themeLight {
+			ink = trayBlack
 		}
 		if got := trayOutlineFor(theme); got != ink {
 			t.Errorf("outline(%q) = %v, want %v", theme, got, ink)
@@ -314,9 +314,14 @@ func TestTrayThemeOutline(t *testing.T) {
 		}
 	}
 	light, dark := snapOf("yellow"), snapOf("yellow")
+	light.Theme = themeLight
 	dark.Theme = themeDark
 	if pixmapsEqual(trayPixmapsFor(light), trayPixmapsFor(dark)) {
 		t.Error("light and dark render identically")
+	}
+	// A snapshot before the first apply (Theme "") draws as dark.
+	if !pixmapsEqual(trayPixmapsFor(snapOf("yellow")), trayPixmapsFor(dark)) {
+		t.Error(`Theme "" does not render as dark`)
 	}
 }
 
@@ -592,13 +597,13 @@ func TestTraySyncUpdatesAndSignals(t *testing.T) {
 // else (title, tooltip and menu text do not depend on it).
 func TestTraySyncThemeOnly(t *testing.T) {
 	tr, b, got := newTestTray(t, "yellow")
-	b.setTheme(themeDark)
+	b.setTheme(themeLight)
 	<-b.Changed()
 	tr.sync()
 	if want := []string{trayItemIface + ".NewIcon"}; !reflect.DeepEqual(names(got()), want) {
 		t.Errorf("emitted something other than %v", want)
 	}
-	if tr.snap.Theme != themeDark {
+	if tr.snap.Theme != themeLight {
 		t.Errorf("snap theme = %q", tr.snap.Theme)
 	}
 }

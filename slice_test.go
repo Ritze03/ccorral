@@ -181,7 +181,7 @@ func TestSliceSnapshot(t *testing.T) {
 	if err := b.SetMode(modeRed); err != nil {
 		t.Fatal(err)
 	}
-	want := sliceSnapshot{Mode: modeRed, Theme: themeLight, Cores: map[string]string{
+	want := sliceSnapshot{Mode: modeRed, Theme: themeDark, Cores: map[string]string{
 		"green": "0-19", "yellow": "3-9,13-19", "red": "7-9,17-19",
 	}}
 	got := b.Snapshot()
@@ -293,10 +293,10 @@ func TestSliceThemeReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-ch
-	if got := b.Snapshot().Theme; got != themeLight {
+	if got := b.Snapshot().Theme; got != themeDark {
 		t.Errorf("default theme = %q", got)
 	}
-	if err := configSetTheme(b.path, themeDark); err != nil {
+	if err := configSetTheme(b.path, themeLight); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Reload(); err != nil {
@@ -307,7 +307,7 @@ func TestSliceThemeReload(t *testing.T) {
 	default:
 		t.Error("no Changed after a theme-only reload")
 	}
-	if got := b.Snapshot().Theme; got != themeDark {
+	if got := b.Snapshot().Theme; got != themeLight {
 		t.Errorf("theme after reload = %q", got)
 	}
 }

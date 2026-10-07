@@ -174,10 +174,10 @@ var (
 
 // trayOutlineFor is the outline and level line colour of a theme.
 func trayOutlineFor(theme string) color.RGBA {
-	if theme == themeDark {
-		return trayWhite
+	if theme == themeLight {
+		return trayBlack
 	}
-	return trayBlack
+	return trayWhite
 }
 
 // trayFillFor is the liquid colour of a mode.
