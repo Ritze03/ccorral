@@ -62,9 +62,11 @@ One static binary, no cgo.
 ./ccorral install
 ```
 
+Every run is a full reinstall: re-running `./ccorral install` from a fresh build updates everything (stops the service, replaces the binary and unit, starts it again). Running the *installed* `ccorral install` (`~/.local/bin/ccorral`) has no new binary to copy; it warns and only re-applies the same version.
+
 It asks first and writes nothing until you confirm a summary of what will change. Then it:
 
-- copies the binary to `~/.local/bin/ccorral` (and tells you if that isn't on your `$PATH`)
+- stops the service if it is running, then copies the binary to `~/.local/bin/ccorral` (and tells you if that isn't on your `$PATH`)
 - writes `~/.config/systemd/user/ccorral.service`
 - writes `~/.config/systemd/user/claude.slice` with `AllowedCPUs=` set to the yellow group.
   The file starts with a marker line; ccorral rewrites a slice carrying it freely, but if you

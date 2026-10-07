@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 const wantSliceFor10Cores = installSliceMarker + `
@@ -161,7 +162,7 @@ func TestInstallFresh(t *testing.T) {
 	if len(entries) != 1 {
 		t.Errorf("bin dir has %d entries, want 1", len(entries))
 	}
-	want := []string{"is-active --quiet ccorral.service", "daemon-reload", "enable --now ccorral.service"}
+	want := []string{"is-active --quiet ccorral.service", "daemon-reload", "enable ccorral.service", "start ccorral.service"}
 	if got := f.callStrings(); !reflect.DeepEqual(got, want) {
 		t.Errorf("systemctl calls %q, want %q", got, want)
 	}
@@ -173,7 +174,7 @@ func TestInstallWhenAlreadyActiveRestarts(t *testing.T) {
 	if code, out := f.install(t, "yes\n"); code != 0 {
 		t.Fatalf("code %d\n%s", code, out)
 	}
-	want := []string{"is-active --quiet ccorral.service", "daemon-reload", "enable --now ccorral.service", "restart ccorral.service"}
+	want := []string{"is-active --quiet ccorral.service", "stop ccorral.service", "daemon-reload", "enable ccorral.service", "start ccorral.service"}
 	if got := f.callStrings(); !reflect.DeepEqual(got, want) {
 		t.Errorf("systemctl calls %q, want %q", got, want)
 	}
@@ -197,7 +198,7 @@ func TestInstallSystemctlFailure(t *testing.T) {
 	if code != 1 {
 		t.Errorf("code %d, want 1", code)
 	}
-	if !strings.Contains(out, "enable --now ccorral.service failed") || !strings.Contains(out, "boom") {
+	if !strings.Contains(out, "enable ccorral.service failed") || !strings.Contains(out, "boom") {
 		t.Errorf("output lacks failure detail:\n%s", out)
 	}
 }
@@ -252,7 +253,7 @@ func TestInstallSliceUnmarkedDeclined(t *testing.T) {
 	if !exists(f.env.unitPath()) || !exists(f.env.binPath()) {
 		t.Error("install did not continue after declining the slice")
 	}
-	if got := f.callStrings(); len(got) != 3 || got[1] != "daemon-reload" {
+	if got := f.callStrings(); len(got) != 4 || got[1] != "daemon-reload" {
 		t.Errorf("calls %q", got)
 	}
 }
@@ -367,7 +368,9 @@ func TestInstallSummaryListsActions(t *testing.T) {
 		"write " + f.env.slicePath() + " (AllowedCPUs=3-9,13-19)",
 		"remove " + f.env.oldScript(),
 		"daemon-reload",
-		"enable --now ccorral.service",
+		"stop ccorral.service",
+		"enable ccorral.service",
+		"start ccorral.service",
 		"Proceed? [y/N]",
 	} {
 		if !strings.Contains(out, want) {
@@ -441,5 +444,65 @@ func TestUninstallNothingInstalled(t *testing.T) {
 	f := newInstFixture(t)
 	if code, out := f.uninstall(t, "y\n"); code != 0 {
 		t.Errorf("code %d\n%s", code, out)
+	}
+}
+
+// Running as the installed copy: loud Note, no copy, but unit rewrite and a
+// full stop/start cycle.
+func TestInstallSameBinaryWarnsAndSkipsCopy(t *testing.T) {
+	f := newInstFixture(t)
+	f.active = true
+	f.write(t, f.env.binPath(), "BINARY-V1")
+	f.env.self = f.env.binPath()
+	code, out := f.install(t, "y\n")
+	if code != 0 {
+		t.Fatalf("code %d\n%s", code, out)
+	}
+	for _, want := range []string{
+		"Note: you are running the installed copy (" + f.env.binPath() + "), so there is no new binary to install —\n" +
+			"this only rewrites the unit and restarts the service. To install a new build, run it from the build:\n" +
+			"  ./ccorral install\n",
+		"reinstall from the installed copy (same version)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "keep "+f.env.binPath()) || strings.Contains(out, "copy "+f.env.self+" to") {
+		t.Errorf("same-binary run must not claim to copy/keep:\n%s", out)
+	}
+	if got := readFile(t, f.env.binPath()); got != "BINARY-V1" {
+		t.Errorf("binary %q changed", got)
+	}
+	if got := readFile(t, f.env.unitPath()); got != installUnitTemplate {
+		t.Errorf("unit not written")
+	}
+	want := []string{"is-active --quiet ccorral.service", "stop ccorral.service", "daemon-reload", "enable ccorral.service", "start ccorral.service"}
+	if got := f.callStrings(); !reflect.DeepEqual(got, want) {
+		t.Errorf("systemctl calls %q, want %q", got, want)
+	}
+}
+
+// A different binary gets no Note; the unit is rewritten even if identical
+// and the binary is copied even when the target already has the same content.
+func TestInstallAlwaysRewritesAndCopies(t *testing.T) {
+	f := newInstFixture(t)
+	f.write(t, f.env.binPath(), "BINARY-V2") // identical content, different file
+	f.write(t, f.env.unitPath(), installUnitTemplate)
+	old := time.Now().Add(-time.Hour)
+	os.Chtimes(f.env.unitPath(), old, old)
+	os.Chtimes(f.env.binPath(), old, old)
+	code, out := f.install(t, "y\n")
+	if code != 0 {
+		t.Fatalf("code %d\n%s", code, out)
+	}
+	if strings.Contains(out, "Note: you are running the installed copy") {
+		t.Errorf("unexpected Note:\n%s", out)
+	}
+	for _, p := range []string{f.env.unitPath(), f.env.binPath()} {
+		fi, err := os.Stat(p)
+		if err != nil || !fi.ModTime().After(old.Add(time.Minute)) {
+			t.Errorf("%s was not rewritten", p)
+		}
 	}
 }

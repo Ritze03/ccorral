@@ -183,12 +183,20 @@ func installRun(env installEnv, in io.Reader, out io.Writer) int {
 
 	// --- summary + confirm ---
 	sameBin := false
-	if tgt, terr := filepath.EvalSymlinks(env.binPath()); terr == nil && tgt == env.self {
-		sameBin = true
+	if ti, terr := os.Stat(env.binPath()); terr == nil {
+		if si, serr := os.Stat(env.self); serr == nil && os.SameFile(ti, si) {
+			sameBin = true
+		}
+	}
+	if sameBin {
+		fmt.Fprintf(out, "Note: you are running the installed copy (%s), so there is no new binary to install —\n"+
+			"this only rewrites the unit and restarts the service. To install a new build, run it from the build:\n"+
+			"  ./ccorral install\n\n", env.binPath())
 	}
 	fmt.Fprintln(out, "This will:")
+	fmt.Fprintf(out, "  - stop %s if it is running\n", installService)
 	if sameBin {
-		fmt.Fprintf(out, "  - keep %s (already this binary)\n", env.binPath())
+		fmt.Fprintf(out, "  - reinstall from the installed copy (same version): %s is left as is\n", env.binPath())
 	} else {
 		fmt.Fprintf(out, "  - copy %s to %s\n", env.self, env.binPath())
 	}
@@ -209,7 +217,8 @@ func installRun(env installEnv, in io.Reader, out io.Writer) int {
 		fmt.Fprintf(out, "  - remove %s\n", env.oldScript())
 	}
 	fmt.Fprintln(out, "  - run: systemctl --user daemon-reload")
-	fmt.Fprintf(out, "  - run: systemctl --user enable --now %s (restart it if already running)\n\n", installService)
+	fmt.Fprintf(out, "  - run: systemctl --user enable %s\n", installService)
+	fmt.Fprintf(out, "  - run: systemctl --user start %s\n\n", installService)
 	if yes, ok := installAsk(r, out, "Proceed? [y/N] "); !ok || !yes {
 		return abort()
 	}
@@ -221,10 +230,19 @@ func installRun(env installEnv, in io.Reader, out io.Writer) int {
 		return 1
 	}
 	_, activeErr := env.run("is-active", "--quiet", installService)
-	wasActive := activeErr == nil
+	if activeErr == nil {
+		if msg, err := env.run("stop", installService); err != nil {
+			fmt.Fprintf(out, "systemctl --user stop %s failed: %v\n", installService, err)
+			if msg != "" {
+				fmt.Fprintln(out, msg)
+			}
+			return 1
+		}
+		fmt.Fprintf(out, "Ran systemctl --user stop %s\n", installService)
+	}
 
 	if sameBin {
-		fmt.Fprintf(out, "Kept %s\n", env.binPath())
+		fmt.Fprintf(out, "Kept %s (same file as the running binary)\n", env.binPath())
 	} else {
 		if err := installCopy(env.self, env.binPath()); err != nil {
 			return fail("install failed", err)
@@ -249,10 +267,7 @@ func installRun(env installEnv, in io.Reader, out io.Writer) int {
 		fmt.Fprintf(out, "Removed %s\n", env.oldScript())
 	}
 
-	steps := [][]string{{"daemon-reload"}, {"enable", "--now", installService}}
-	if wasActive {
-		steps = append(steps, []string{"restart", installService})
-	}
+	steps := [][]string{{"daemon-reload"}, {"enable", installService}, {"start", installService}}
 	for _, s := range steps {
 		if msg, err := env.run(s...); err != nil {
 			fmt.Fprintf(out, "systemctl --user %s failed: %v\n", strings.Join(s, " "), err)
