@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,21 +20,18 @@ const (
 	tsClaud = tsVers + "2.0.0/claude"
 )
 
-type sweepCall struct {
-	kind string // "scope" or "attach"
-	unit string
-	pids []uint32
-}
-
 type sweepFake struct {
-	calls []sweepCall
+	calls [][]uint32
 	fail  map[uint32]bool // a call whose first pid is here fails
 	// failPid makes every call that includes the pid fail (a pid that died).
 	failPid uint32
 }
 
-func (f *sweepFake) rec(kind, unit string, pids []uint32) error {
-	f.calls = append(f.calls, sweepCall{kind, unit, pids})
+func (f *sweepFake) StartScope(name, desc string, pids []uint32) error {
+	if !strings.HasPrefix(name, fmt.Sprintf("ccorral-%d-", pids[0])) || !strings.HasSuffix(name, ".scope") {
+		return fmt.Errorf("bad scope name %q", name)
+	}
+	f.calls = append(f.calls, pids)
 	for _, p := range pids {
 		if p == f.failPid {
 			return errors.New("no such process")
@@ -44,15 +42,6 @@ func (f *sweepFake) rec(kind, unit string, pids []uint32) error {
 	}
 	return nil
 }
-
-func (f *sweepFake) StartScope(name, desc string, pids []uint32) error {
-	if !strings.HasPrefix(name, fmt.Sprintf("ccorral-%d-", pids[0])) || !strings.HasSuffix(name, ".scope") {
-		return fmt.Errorf("bad scope name %q", name)
-	}
-	return f.rec("scope", "", pids)
-}
-
-func (f *sweepFake) Attach(unit string, pids []uint32) error { return f.rec("attach", unit, pids) }
 
 type tsProc struct {
 	pid, ppid int
@@ -91,13 +80,13 @@ func tsRun(t *testing.T, f *sweepFake, ps ...tsProc) {
 	must(t, sweepOnce(sweepConfig{ProcRoot: tsTree(t, ps...), Prefix: tsVers, Mover: f}))
 }
 
-func tsWant(t *testing.T, f *sweepFake, want ...sweepCall) {
+func tsWant(t *testing.T, f *sweepFake, want ...[]uint32) {
 	t.Helper()
 	if len(f.calls) == 0 && len(want) == 0 {
 		return
 	}
 	if !reflect.DeepEqual(f.calls, want) {
-		t.Fatalf("calls = %+v, want %+v", f.calls, want)
+		t.Fatalf("calls = %v, want %v", f.calls, want)
 	}
 }
 
@@ -109,26 +98,19 @@ func TestSweepEscapedRootAndDescendants(t *testing.T) {
 		tsProc{102, 101, "/usr/bin/node", tsOut},
 		tsProc{103, 100, "/usr/bin/git", tsIn}, // already inside: not moved
 	)
-	tsWant(t, f, sweepCall{"scope", "", []uint32{100, 101, 102}})
+	tsWant(t, f, []uint32{100, 101, 102})
 }
 
-func TestSweepStragglerAttachesToRootUnit(t *testing.T) {
+// Root already inside the slice (wrapper or earlier move): only the stray child
+// that started its own scope gets a new scope.
+func TestSweepStragglerGetsNewScope(t *testing.T) {
 	f := &sweepFake{}
 	tsRun(t, f,
 		tsProc{100, 1, tsClaud, tsIn},
 		tsProc{101, 100, "/usr/bin/zsh", tsIn},
 		tsProc{102, 101, "/usr/bin/sleep", tsOut},
 	)
-	tsWant(t, f, sweepCall{"attach", "run-u1.scope", []uint32{102}})
-}
-
-func TestSweepAttachUsesUnitBelowSlice(t *testing.T) {
-	f := &sweepFake{}
-	tsRun(t, f,
-		tsProc{100, 1, tsClaud, tsIn + "/sub/deeper"},
-		tsProc{101, 100, "/usr/bin/sleep", tsOut},
-	)
-	tsWant(t, f, sweepCall{"attach", "run-u1.scope", []uint32{101}})
+	tsWant(t, f, []uint32{102})
 }
 
 func TestSweepUnreadableExeKeepsDescendants(t *testing.T) {
@@ -139,12 +121,11 @@ func TestSweepUnreadableExeKeepsDescendants(t *testing.T) {
 		tsProc{102, 101, "/usr/bin/node", tsOut},
 		tsProc{300, 1, "", tsOut}, // never a root
 	)
-	tsWant(t, f, sweepCall{"scope", "", []uint32{100, 101, 102}})
+	tsWant(t, f, []uint32{100, 101, 102})
 }
 
-// A pid that died after the scan fails the whole scope start: retry with the
-// root alone, then attach the rest to the new scope.
-func TestSweepBatchFailsRootOnlyRetry(t *testing.T) {
+// A pid that died after the scan fails the batch: one scope per pid, the dead one ignored.
+func TestSweepBatchFailsPerPidScopes(t *testing.T) {
 	f := &sweepFake{failPid: 102}
 	tsRun(t, f,
 		tsProc{100, 1, tsClaud, tsOut},
@@ -152,40 +133,20 @@ func TestSweepBatchFailsRootOnlyRetry(t *testing.T) {
 		tsProc{102, 101, "/usr/bin/gone", tsOut},
 		tsProc{103, 101, "/usr/bin/node", tsOut},
 	)
-	if len(f.calls) != 6 {
-		t.Fatalf("calls = %+v", f.calls)
-	}
-	if !reflect.DeepEqual(f.calls[0].pids, []uint32{100, 101, 102, 103}) || f.calls[0].kind != "scope" {
-		t.Errorf("first call %+v, want the full batch", f.calls[0])
-	}
-	if !reflect.DeepEqual(f.calls[1], sweepCall{"scope", "", []uint32{100}}) {
-		t.Errorf("second call %+v, want root-only scope", f.calls[1])
-	}
-	if c := f.calls[2]; c.kind != "attach" || !strings.HasPrefix(c.unit, "ccorral-100-") || !reflect.DeepEqual(c.pids, []uint32{101, 102, 103}) {
-		t.Errorf("third call %+v, want batch attach of the rest to the new scope", c)
-	}
-	// batch attach failed (102 is gone): per pid, 102 alone fails, the rest land.
-	for i, pid := range []uint32{101, 102, 103} {
-		if c := f.calls[3+i]; c.kind != "attach" || !reflect.DeepEqual(c.pids, []uint32{pid}) {
-			t.Errorf("call %d = %+v, want attach of %d", 3+i, c, pid)
-		}
-	}
+	tsWant(t, f, []uint32{100, 101, 102, 103}, []uint32{100}, []uint32{101}, []uint32{102}, []uint32{103})
 }
 
-func TestSweepAttachFallsBackPerPid(t *testing.T) {
-	f := &sweepFake{failPid: 102}
-	tsRun(t, f,
-		tsProc{100, 1, tsClaud, tsIn},
-		tsProc{101, 100, "/usr/bin/sleep", tsOut},
-		tsProc{102, 100, "/usr/bin/gone", tsOut},
-		tsProc{103, 100, "/usr/bin/sleep", tsOut},
+func TestSweepLogsMove(t *testing.T) {
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	tsRun(t, &sweepFake{},
+		tsProc{100, 1, tsClaud, tsOut},
+		tsProc{101, 100, "/usr/bin/bash", tsOut},
 	)
-	tsWant(t, f,
-		sweepCall{"attach", "run-u1.scope", []uint32{101, 102, 103}},
-		sweepCall{"attach", "run-u1.scope", []uint32{101}},
-		sweepCall{"attach", "run-u1.scope", []uint32{102}},
-		sweepCall{"attach", "run-u1.scope", []uint32{103}},
-	)
+	if got := buf.String(); !strings.Contains(got, "sweep: claude 100: moved 2 pids to ccorral-100-") {
+		t.Errorf("log = %q", got)
+	}
 }
 
 func TestSweepLeavesNonClaudeAlone(t *testing.T) {
@@ -199,7 +160,7 @@ func TestSweepLeavesNonClaudeAlone(t *testing.T) {
 		tsProc{200, 1, "/fake/other/claude", tsOut}, // wrong prefix
 		tsProc{201, 1, "/fake/versions", tsOut},     // prefix without the slash
 	)
-	tsWant(t, f, sweepCall{"scope", "", []uint32{100, 101}})
+	tsWant(t, f, []uint32{100, 101})
 }
 
 func TestSweepNested(t *testing.T) {
@@ -210,7 +171,7 @@ func TestSweepNested(t *testing.T) {
 		tsProc{102, 101, tsClaud, tsOut}, // claude inside claude
 		tsProc{103, 102, "/usr/bin/bash", tsOut},
 	)
-	tsWant(t, f, sweepCall{"scope", "", []uint32{100, 101, 102, 103}})
+	tsWant(t, f, []uint32{100, 101, 102, 103})
 }
 
 func TestSweepNothingToDo(t *testing.T) {
@@ -233,8 +194,9 @@ func TestSweepMoverErrorContinues(t *testing.T) {
 		tsProc{301, 300, "/usr/bin/bash", tsOut},
 	)
 	tsWant(t, f,
-		sweepCall{"scope", "", []uint32{100}},
-		sweepCall{"scope", "", []uint32{300, 301}},
+		[]uint32{100},
+		[]uint32{100}, // the per-pid retry
+		[]uint32{300, 301},
 	)
 }
 

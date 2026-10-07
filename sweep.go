@@ -31,8 +31,6 @@ const (
 type sweepMover interface {
 	// StartScope creates a transient scope inside claude.slice holding pids.
 	StartScope(name, desc string, pids []uint32) error
-	// Attach moves pids into the existing unit.
-	Attach(unit string, pids []uint32) error
 }
 
 // sweepConfig is everything sweepOnce needs; the zero ProcRoot means /proc.
@@ -104,40 +102,14 @@ func sweepCgroupV2(s string) string {
 	return ""
 }
 
-// sweepUnit is the unit directly below claude.slice in cgroup, even when the
-// process sits in a sub-cgroup of it.
-func sweepUnit(cgroup string) string {
-	_, rest, _ := strings.Cut(cgroup+"/", "/"+sweepSlice+"/")
-	unit, _, _ := strings.Cut(rest, "/")
-	return unit
-}
-
-// sweepAttach attaches pids to unit. The batch fails as a whole when one PID
-// died since the scan, so it then goes PID by PID and only counts failures.
-func sweepAttach(m sweepMover, unit string, pids []uint32) error {
-	if m.Attach(unit, pids) == nil {
-		return nil
-	}
-	failed := 0
-	for _, p := range pids {
-		if m.Attach(unit, []uint32{p}) != nil {
-			failed++
-		}
-	}
-	if failed > 0 {
-		return fmt.Errorf("%d of %d pids not attached to %s", failed, len(pids), unit)
-	}
-	return nil
-}
-
 func sweepInside(cgroup string) bool {
 	return strings.Contains(cgroup+"/", "/"+sweepSlice+"/")
 }
 
-// sweepOnce moves every Claude process tree that is not yet inside
-// claude.slice. A failed move (typically a PID that died after the scan) is
-// logged and skipped; the next sweep catches what is left. Only a failure to
-// read the proc tree is returned.
+// sweepOnce moves every Claude process outside claude.slice into a new scope
+// there. A failed move (typically a PID that died after the scan) is logged
+// and skipped; the next sweep catches what is left. Only a failure to read the
+// proc tree is returned.
 func sweepOnce(cfg sweepConfig) error {
 	root := cfg.ProcRoot
 	if root == "" {
@@ -185,34 +157,28 @@ func sweepOnce(cfg sweepConfig) error {
 		}
 		sort.Slice(outside, func(i, j int) bool { return outside[i] < outside[j] })
 
-		if cg := procs[r].cgroup; sweepInside(cg) {
-			// Root is in the slice already (wrapper or earlier sweep): stragglers join its unit.
-			err = sweepAttach(cfg.Mover, sweepUnit(cg), outside)
-		} else {
-			name := fmt.Sprintf("ccorral-%d-%d.scope", r, time.Now().UnixNano())
-			desc := fmt.Sprintf("ccorral: claude %d", r)
-			err = cfg.Mover.StartScope(name, desc, outside)
-			if err != nil && len(outside) > 1 {
-				// A child may have exited since the scan and the batch is
-				// all-or-nothing: start with the root alone, then attach the
-				// rest (stragglers are left to the next sweep).
-				name = fmt.Sprintf("ccorral-%d-%d.scope", r, time.Now().UnixNano())
-				if err = cfg.Mover.StartScope(name, desc, []uint32{uint32(r)}); err == nil {
-					var rest []uint32
-					for _, p := range outside {
-						if p != uint32(r) {
-							rest = append(rest, p)
-						}
-					}
-					err = sweepAttach(cfg.Mover, name, rest)
-				}
+		// Always a new scope: AttachProcessesToUnit is refused for non-delegated units.
+		desc := fmt.Sprintf("ccorral: claude %d", r)
+		scope := sweepScope(outside[0])
+		if err := cfg.Mover.StartScope(scope, desc, outside); err == nil {
+			log.Printf("sweep: claude %d: moved %d pids to %s", r, len(outside), scope)
+			continue
+		}
+		// The batch is all-or-nothing and a PID may have exited since the scan:
+		// one scope per PID, failures ignored.
+		moved := 0
+		for _, p := range outside {
+			if cfg.Mover.StartScope(sweepScope(p), desc, []uint32{p}) == nil {
+				moved++
 			}
 		}
-		if err != nil {
-			log.Printf("sweep: claude %d: moving %d pids: %v", r, len(outside), err)
-		}
+		log.Printf("sweep: claude %d: batch of %d pids failed, moved %d one by one", r, len(outside), moved)
 	}
 	return nil
+}
+
+func sweepScope(pid uint32) string {
+	return fmt.Sprintf("ccorral-%d-%d.scope", pid, time.Now().UnixNano())
 }
 
 // sweepDBus is the real mover. It dials the session bus per call: moves are
@@ -248,8 +214,4 @@ func (d sweepDBus) StartScope(name, desc string, pids []uint32) error {
 		{"PIDs", dbus.MakeVariant(pids)},
 	}
 	return d.call("StartTransientUnit", name, "fail", props, []sweepAux{})
-}
-
-func (d sweepDBus) Attach(unit string, pids []uint32) error {
-	return d.call("AttachProcessesToUnit", unit, "", pids)
 }

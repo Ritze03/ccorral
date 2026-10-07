@@ -5,7 +5,8 @@ package main
 // The only knob is AllowedCPUs, set with `systemctl --user set-property
 // --runtime`: the property lives in the user manager's runtime state, so it
 // vanishes on reboot and the daemon re-applies the saved mode at start. Green
-// sets AllowedCPUs= (empty), which clears the limit and gives back all CPUs.
+// sets the explicit list of all CPUs: an empty AllowedCPUs= drops the cpuset
+// controller and leaves running processes on their old, narrowed mask.
 
 import (
 	"context"
@@ -34,8 +35,7 @@ func sliceSystemctl(args ...string) error {
 	return nil
 }
 
-// sliceArgs is the systemctl argv that sets claude.slice to cpus; no cpus
-// (green) clears the limit.
+// sliceArgs is the systemctl argv that sets claude.slice to cpus.
 func sliceArgs(cpus []int) []string {
 	return []string{"--user", "set-property", "--runtime", sweepSlice, "AllowedCPUs=" + cpuFormat(cpus)}
 }
@@ -56,31 +56,30 @@ func newSliceBackend() *sliceBackend {
 }
 
 // apply sets the slice to cfg's mode. A topology failure (err from configLoad)
-// applies nothing: the empty groups would otherwise clear the limit. b.mu held.
+// applies nothing; a mode with no CPUs is refused too. b.mu held.
 func (b *sliceBackend) apply(cfg Config, err error) error {
 	if err != nil {
 		return err
 	}
 	group := cfg.Group(cfg.Mode)
-	if cfg.Mode != modeGreen && len(group) == 0 {
-		return fmt.Errorf("%s has no CPUs: refusing to clear the limit", cfg.Mode)
-	}
-	shown := group
-	if cfg.Mode == modeGreen {
+	if cfg.Mode == modeGreen { // explicit full list: AllowedCPUs= (empty) would not widen running processes
 		cores, err := cpuCores(b.sysRoot)
 		if err != nil {
 			return err
 		}
-		shown = nil
+		group = nil
 		for _, c := range cores {
-			shown = append(shown, c...)
+			group = append(group, c...)
 		}
-		sort.Ints(shown)
+		sort.Ints(group)
+	}
+	if len(group) == 0 {
+		return fmt.Errorf("%s has no CPUs: refusing to clear the limit", cfg.Mode)
 	}
 	if err := b.run(sliceArgs(group)...); err != nil {
 		return err
 	}
-	b.applied = cfg.Mode + " " + cpuFormat(shown)
+	b.applied = cfg.Mode + " " + cpuFormat(group)
 	return nil
 }
 

@@ -31,9 +31,6 @@ func TestSliceArgs(t *testing.T) {
 	if got := sliceArgs([]int{3, 4, 5, 13, 14, 15}); !reflect.DeepEqual(got, wantArgs("3-5,13-15")) {
 		t.Errorf("group: %v", got)
 	}
-	if got := sliceArgs(nil); !reflect.DeepEqual(got, wantArgs("")) {
-		t.Errorf("green: %v", got)
-	}
 }
 
 func TestSliceModes(t *testing.T) {
@@ -43,7 +40,7 @@ func TestSliceModes(t *testing.T) {
 	}{
 		{modeYellow, "3-9,13-19", "yellow 3-9,13-19"},
 		{modeRed, "7-9,17-19", "red 7-9,17-19"},
-		{modeGreen, "", "green 0-19"},
+		{modeGreen, "0-19", "green 0-19"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.mode, func(t *testing.T) {
@@ -130,12 +127,16 @@ func TestSliceBadMode(t *testing.T) {
 	}
 }
 
-// A broken topology must not turn into AllowedCPUs= (which would clear the limit).
+// A broken topology must not turn into AllowedCPUs= (which would clear the limit),
+// green included.
 func TestSliceNoTopologyApplyNothing(t *testing.T) {
 	b, calls := newTestSlice(t)
 	b.sysRoot = t.TempDir()
 	if err := b.SetMode(modeRed); err == nil {
 		t.Error("SetMode succeeded without topology")
+	}
+	if err := b.SetMode(modeGreen); err == nil {
+		t.Error("SetMode(green) succeeded without topology")
 	}
 	if err := b.Start(); err == nil {
 		t.Error("Start succeeded without topology")
@@ -150,6 +151,17 @@ func TestSliceApplyRefusesEmptyGroup(t *testing.T) {
 	b, calls := newTestSlice(t)
 	if err := b.apply(Config{Mode: modeRed}, nil); err == nil {
 		t.Error("apply(red, no CPUs) succeeded")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("systemctl ran: %v", *calls)
+	}
+}
+
+func TestSliceApplyRefusesGreenWithoutCPUs(t *testing.T) {
+	b, calls := newTestSlice(t)
+	b.sysRoot = t.TempDir()
+	if err := b.apply(Config{Mode: modeGreen}, nil); err == nil {
+		t.Error("apply(green, no topology) succeeded")
 	}
 	if len(*calls) != 0 {
 		t.Errorf("systemctl ran: %v", *calls)
