@@ -50,6 +50,22 @@ const ipcUsage = "usage:\n  ccorral status\n  ccorral green|yellow|red\n  ccorra
 // ipcNotRunning is what the CLI prints when nothing answers the socket.
 const ipcNotRunning = "ccorral daemon not running — start it with `systemctl --user start ccorral`"
 
+// ipcNotInstalled is printed instead when the systemd unit file is absent.
+const ipcNotInstalled = "ccorral is not installed — run 'ccorral install' first"
+
+// ipcNotRunningMsg picks the hint: install first if the unit file is missing.
+func ipcNotRunningMsg() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "systemd", "user", installService)); err != nil {
+		return ipcNotInstalled
+	}
+	return ipcNotRunning
+}
+
 // ipcClosedEarly is what the CLI prints when the daemon accepted the
 // connection but closed it without a reply (it was stopped mid-request).
 const ipcClosedEarly = "ccorral daemon closed the connection without replying (was it stopped?)"
@@ -225,14 +241,14 @@ func RunIPCClient(path string, args []string, out io.Writer) int {
 
 	conn, err := net.DialTimeout("unix", path, ipcTimeout)
 	if err != nil {
-		fmt.Fprintln(out, ipcNotRunning)
+		fmt.Fprintln(out, ipcNotRunningMsg())
 		return 1
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(ipcTimeout))
 
 	if _, err := io.WriteString(conn, strings.Join(args, " ")+"\n"); err != nil {
-		fmt.Fprintln(out, ipcNotRunning)
+		fmt.Fprintln(out, ipcNotRunningMsg())
 		return 1
 	}
 	resp, _ := io.ReadAll(conn)

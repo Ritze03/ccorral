@@ -289,10 +289,25 @@ func TestBadArgsExit2WithoutDialing(t *testing.T) {
 }
 
 func TestDaemonNotRunning(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
 	path := filepath.Join(t.TempDir(), "absent.sock")
+
 	code, out := run(t, path, "status")
-	if code != 1 || out != ipcNotRunning+"\n" {
-		t.Errorf("exit %d output %q, want 1 and %q", code, out, ipcNotRunning+"\n")
+	if code != 1 || !strings.Contains(out, "ccorral install") {
+		t.Errorf("unit absent: exit %d output %q, want 1 and install hint", code, out)
+	}
+
+	unitDir := filepath.Join(cfg, "systemd", "user")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, installService), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = run(t, path, "status")
+	if code != 1 || !strings.Contains(out, "systemctl --user start ccorral") {
+		t.Errorf("unit present: exit %d output %q, want 1 and systemctl hint", code, out)
 	}
 }
 
@@ -472,7 +487,7 @@ func TestDaemonClosesWithoutReplying(t *testing.T) {
 		if d && out != ipcClosedEarly+"\n" {
 			t.Errorf("drain=%v: output %q, want %q", d, out, ipcClosedEarly+"\n")
 		}
-		if !d && out != ipcClosedEarly+"\n" && out != ipcNotRunning+"\n" {
+		if !d && out != ipcClosedEarly+"\n" && out != ipcNotRunningMsg()+"\n" {
 			t.Errorf("drain=%v: output %q, want the closed-early or not-running message", d, out)
 		}
 	}
