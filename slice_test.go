@@ -25,13 +25,18 @@ func newTestSlice(t *testing.T) (*sliceBackend, *[][]string) {
 	return b, &calls
 }
 
-func wantArgs(cpulist string) []string {
-	return []string{"--user", "set-property", "--runtime", "claude.slice", "AllowedCPUs=" + cpulist}
+func wantArgs(cpulist string) []string { return wantArgsW(cpulist, "idle") }
+
+func wantArgsW(cpulist, weight string) []string {
+	return []string{"--user", "set-property", "--runtime", "claude.slice", "AllowedCPUs=" + cpulist, "CPUWeight=" + weight}
 }
 
 func TestSliceArgs(t *testing.T) {
-	if got := sliceArgs([]int{3, 4, 5, 13, 14, 15}); !reflect.DeepEqual(got, wantArgs("3-5,13-15")) {
+	if got := sliceArgs([]int{3, 4, 5, 13, 14, 15}, "idle"); !reflect.DeepEqual(got, wantArgs("3-5,13-15")) {
 		t.Errorf("group: %v", got)
+	}
+	if got := sliceArgs([]int{0, 1}, "100"); !reflect.DeepEqual(got, wantArgsW("0-1", "100")) {
+		t.Errorf("weight 100: %v", got)
 	}
 }
 
@@ -40,9 +45,9 @@ func TestSliceModes(t *testing.T) {
 	tests := []struct {
 		mode, cpulist, status string
 	}{
-		{modeYellow, "3-9,13-19", "yellow 3-9,13-19"},
-		{modeRed, "7-9,17-19", "red 7-9,17-19"},
-		{modeGreen, "0-19", "green 0-19"},
+		{modeYellow, "3-9,13-19", "yellow 3-9,13-19 weight=idle"},
+		{modeRed, "7-9,17-19", "red 7-9,17-19 weight=idle"},
+		{modeGreen, "0-19", "green 0-19 weight=idle"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.mode, func(t *testing.T) {
@@ -58,6 +63,37 @@ func TestSliceModes(t *testing.T) {
 			}
 			if got := readCfg(t, b.path); got != "mode="+tt.mode+"\n" {
 				t.Errorf("config = %q", got)
+			}
+		})
+	}
+}
+
+// The weight from the config goes out in every mode, green included.
+func TestSliceWeight(t *testing.T) {
+	for _, tt := range []struct{ mode, cpulist string }{
+		{modeGreen, "0-19"}, {modeYellow, "3-9,13-19"}, {modeRed, "7-9,17-19"},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			b, calls := newTestSlice(t)
+			writeCfg(t, b.path, "weight=50\n")
+			if err := b.SetMode(tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			if want := [][]string{wantArgsW(tt.cpulist, "50")}; !reflect.DeepEqual(*calls, want) {
+				t.Errorf("argv = %v, want %v", *calls, want)
+			}
+			if got, want := b.Status(), tt.mode+" "+tt.cpulist+" weight=50"; got != want {
+				t.Errorf("Status = %q, want %q", got, want)
+			}
+			// A changed weight is picked up by Reload.
+			if err := configSetWeight(b.path, "idle"); err != nil {
+				t.Fatal(err)
+			}
+			if err := b.Reload(); err != nil {
+				t.Fatal(err)
+			}
+			if got := (*calls)[1]; !reflect.DeepEqual(got, wantArgs(tt.cpulist)) {
+				t.Errorf("after reload argv = %v", got)
 			}
 		})
 	}
@@ -92,7 +128,7 @@ func TestSliceReload(t *testing.T) {
 	if !reflect.DeepEqual(*calls, want) {
 		t.Errorf("argv = %v, want %v", *calls, want)
 	}
-	if got := b.Status(); got != "yellow 1-2,11-12" {
+	if got := b.Status(); got != "yellow 1-2,11-12 weight=idle" {
 		t.Errorf("Status = %q", got)
 	}
 }
@@ -114,7 +150,7 @@ func TestSliceRunnerError(t *testing.T) {
 	if got := readCfg(t, b.path); got != "mode=red\n" {
 		t.Errorf("config = %q", got)
 	}
-	if got := b.Status(); got != "yellow 3-9,13-19" {
+	if got := b.Status(); got != "yellow 3-9,13-19 weight=idle" {
 		t.Errorf("Status = %q, want the last applied", got)
 	}
 }

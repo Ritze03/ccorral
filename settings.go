@@ -1,7 +1,7 @@
 package main
 
 // settings.go is `ccorral settings`: a small full-screen terminal UI over the
-// config file (config.go) for the two core groups, the sweep interval and the icon theme. Mode
+// config file (config.go) for the two core groups, the sweep interval, the icon theme and the CPU weight. Mode
 // switching is not here; that is the tray and `ccorral green|yellow|red`.
 //
 // It is a separate, short-lived process on purpose: every change is written
@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -53,8 +54,13 @@ const (
 	settingsRowRed
 	settingsRowInterval
 	settingsRowTheme
+	settingsRowWeight
 	settingsRows
 )
+
+// settingsWeights are the presets left/right step through, lowest first (idle
+// is below 1). 100 is systemd's normal weight.
+var settingsWeights = [...]string{weightIdle, "1", "10", "50", "100", "200", "500", "1000", "10000"}
 
 var (
 	settingsGroupNames = [...]string{modeYellow, modeRed}
@@ -68,6 +74,7 @@ type settingsState struct {
 	yellow, red []int
 	interval    int
 	theme       string // themeLight or themeDark
+	weight      string // weightIdle or "1".."10000"
 	row, col    int
 	status      string
 }
@@ -82,7 +89,7 @@ func settingsLoad(path, sysRoot string) (settingsState, error) {
 	if err != nil {
 		return settingsState{}, err
 	}
-	return settingsState{cores: cores, yellow: c.Yellow, red: c.Red, interval: c.IntervalMs, theme: c.Theme}, nil
+	return settingsState{cores: cores, yellow: c.Yellow, red: c.Red, interval: c.IntervalMs, theme: c.Theme, weight: c.Weight}, nil
 }
 
 // group is the CPU list of the group row r.
@@ -144,6 +151,10 @@ func settingsRender(s settingsState) string {
 	fmt.Fprintf(&b, "  %-9s", "Theme")
 	b.WriteString(cur(s.row == settingsRowTheme, theme) + "\n")
 
+	fmt.Fprintf(&b, "  %-9s", "Weight")
+	b.WriteString(cur(s.row == settingsRowWeight, s.weight))
+	b.WriteString("   (idle, 1–10000; 100 = systemd default)\n")
+
 	b.WriteString("\n  " + settingsHint + "\n")
 	b.WriteString("  " + s.status + "\n")
 	return b.String()
@@ -187,6 +198,8 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 			return settingsStep(s, step)
 		case settingsRowTheme:
 			return settingsTheme(s)
+		case settingsRowWeight:
+			return settingsWeightStep(s, step)
 		}
 		if c := s.col + step; c >= 0 && c < len(s.cores) {
 			s.col = c
@@ -203,7 +216,7 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 		switch s.row {
 		case settingsRowTheme:
 			return settingsTheme(s)
-		case settingsRowInterval:
+		case settingsRowInterval, settingsRowWeight:
 		default:
 			return settingsToggle(s)
 		}
@@ -216,6 +229,8 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 			s.red = red
 		case settingsRowInterval:
 			s.interval = intervalDefault
+		case settingsRowWeight:
+			s.weight = weightIdle
 		default:
 			s.theme = themeDark
 		}
@@ -231,6 +246,29 @@ func settingsTheme(s settingsState) (settingsState, settingsAct) {
 	} else {
 		s.theme = themeDark
 	}
+	return s, settingsActWrite
+}
+
+// settingsWeightStep moves the weight to the next preset above (dir > 0) or
+// below it. A hand-set value that is not a preset is stepped from its place in
+// the order, so it is never skipped over. Idle ranks below every number.
+func settingsWeightStep(s settingsState, dir int) (settingsState, settingsAct) {
+	rank := func(w string) int { // idle is 0, below weightMin
+		n, _ := strconv.Atoi(w)
+		return n
+	}
+	cur := rank(s.weight)
+	next := ""
+	for _, w := range settingsWeights {
+		if (dir > 0 && rank(w) > cur && next == "") || (dir < 0 && rank(w) < cur) {
+			next = w // up: the first above; down: the last below
+		}
+	}
+	if next == "" {
+		s.status = "weight is already at its limit (" + settingsWeights[0] + " to " + settingsWeights[len(settingsWeights)-1] + ")"
+		return s, settingsActNone
+	}
+	s.weight = next
 	return s, settingsActWrite
 }
 
@@ -287,6 +325,8 @@ func settingsSave(path, sysRoot string, s settingsState, act settingsAct, reload
 		err = configSetInterval(path, s.interval)
 	case s.row == settingsRowTheme:
 		err = configSetTheme(path, s.theme)
+	case s.row == settingsRowWeight:
+		err = configSetWeight(path, s.weight)
 	case act == settingsActReset:
 		err = configResetGroup(path, settingsGroupNames[s.row])
 	default:

@@ -2,11 +2,13 @@ package main
 
 // slice.go applies a mode to claude.slice and is the daemon's ipcBackend.
 //
-// The only knob is AllowedCPUs, set with `systemctl --user set-property
-// --runtime`: the property lives in the user manager's runtime state, so it
-// vanishes on reboot and the daemon re-applies the saved mode at start. Green
-// sets the explicit list of all CPUs: an empty AllowedCPUs= drops the cpuset
-// controller and leaves running processes on their old, narrowed mask.
+// Two knobs, set together with `systemctl --user set-property --runtime`:
+// AllowedCPUs (the mode) and CPUWeight (from the config, the same in every mode,
+// green included; "idle" needs systemd 252+). The properties live in the user
+// manager's runtime state, so they vanish on reboot and the daemon re-applies
+// the saved mode at start. Green sets the explicit list of all CPUs: an empty
+// AllowedCPUs= drops the cpuset controller and leaves running processes on
+// their old, narrowed mask.
 
 import (
 	"context"
@@ -37,9 +39,9 @@ func sliceSystemctl(args ...string) error {
 	return nil
 }
 
-// sliceArgs is the systemctl argv that sets claude.slice to cpus.
-func sliceArgs(cpus []int) []string {
-	return []string{"--user", "set-property", "--runtime", sweepSlice, "AllowedCPUs=" + cpuFormat(cpus)}
+// sliceArgs is the systemctl argv that sets claude.slice to cpus and weight.
+func sliceArgs(cpus []int, weight string) []string {
+	return []string{"--user", "set-property", "--runtime", sweepSlice, "AllowedCPUs=" + cpuFormat(cpus), "CPUWeight=" + weight}
 }
 
 // sliceBackend is the daemon's state: the config file, the sysfs root and what
@@ -50,7 +52,7 @@ type sliceBackend struct {
 	run     sliceRunner
 
 	mu      sync.Mutex
-	applied string // "<mode> <cpulist>" of the last successful apply, "" before
+	applied string // "<mode> <cpulist> weight=<w>" of the last successful apply, "" before
 	snap    sliceSnapshot
 	changed chan struct{} // created on first use
 	nudge   chan struct{} // signalled when the sweep interval changes
@@ -136,10 +138,10 @@ func (b *sliceBackend) apply(cfg Config, err error) error {
 	if len(group) == 0 {
 		return fmt.Errorf("%s has no CPUs: refusing to clear the limit", cfg.Mode)
 	}
-	if err := b.run(sliceArgs(group)...); err != nil {
+	if err := b.run(sliceArgs(group, cfg.Weight)...); err != nil {
 		return err
 	}
-	b.applied = cfg.Mode + " " + cpuFormat(group)
+	b.applied = cfg.Mode + " " + cpuFormat(group) + " weight=" + cfg.Weight
 	b.snap = sliceSnapshot{Mode: cfg.Mode, Theme: cfg.Theme, Cores: map[string]string{
 		modeGreen: cpuFormat(all), modeYellow: cpuFormat(cfg.Yellow), modeRed: cpuFormat(cfg.Red),
 	}}

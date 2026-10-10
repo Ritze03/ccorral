@@ -11,9 +11,12 @@ package main
 //	red=<cpulist>
 //	interval=<ms>
 //	theme=dark|light
+//	weight=idle|<1-10000>
 //
 // green means no limit, yellow and red mean "pin to that group". A missing or
 // empty group key means the default computed from the topology (cpuDefaults).
+// weight is the slice's CPUWeight in every mode; idle means it only gets CPU
+// time nothing else wants.
 // Blank lines, "#" comments and unknown keys are kept as they are on rewrite.
 
 import (
@@ -45,6 +48,20 @@ const (
 	intervalDefault = 5000
 )
 
+// CPUWeight of claude.slice: "idle" or an integer weightMin..weightMax (systemd's
+// range; 100 is its normal weight). idle needs systemd 252+.
+const (
+	weightIdle = "idle"
+	weightMin  = 1
+	weightMax  = 10000
+)
+
+// weightValid says whether w is "idle" or a plain integer in the allowed range.
+func weightValid(w string) bool {
+	n, err := strconv.Atoi(w)
+	return w == weightIdle || (err == nil && n >= weightMin && n <= weightMax && strconv.Itoa(n) == w)
+}
+
 // configMu serializes read-modify-write within this process; the rename in
 // configSet keeps other processes from ever seeing a half-written file.
 var configMu sync.Mutex
@@ -67,6 +84,7 @@ type Config struct {
 	RedExplicit    bool
 	IntervalMs     int    // sweep interval, intervalMin..intervalMax
 	Theme          string // themeLight or themeDark
+	Weight         string // CPUWeight: weightIdle or "1".."10000"
 }
 
 // Group is the CPU set a mode pins to; nil for green (no limit).
@@ -163,7 +181,7 @@ func configSet(path, key, value string) error {
 // the topology failing, in which case the groups are nil.
 func configLoad(path, sysRoot string) (Config, error) {
 	kv := configKV(path)
-	c := Config{Mode: modeYellow, IntervalMs: intervalDefault, Theme: themeDark}
+	c := Config{Mode: modeYellow, IntervalMs: intervalDefault, Theme: themeDark, Weight: weightIdle}
 	switch kv["mode"] {
 	case modeGreen, modeYellow, modeRed:
 		c.Mode = kv["mode"]
@@ -181,6 +199,13 @@ func configLoad(path, sysRoot string) (Config, error) {
 		c.Theme = v
 	default:
 		log.Printf("config: ignoring theme=%q: want %s or %s", v, themeLight, themeDark)
+	}
+	if v := kv["weight"]; v != "" {
+		if weightValid(v) {
+			c.Weight = v
+		} else {
+			log.Printf("config: ignoring weight=%q: want %s or an integer from %d to %d", v, weightIdle, weightMin, weightMax)
+		}
 	}
 	cores, err := cpuCores(sysRoot)
 	if err != nil {
@@ -261,4 +286,12 @@ func configSetTheme(path, theme string) error {
 		return configSet(path, "theme", theme)
 	}
 	return fmt.Errorf("unknown theme %q", theme)
+}
+
+// configSetWeight persists the slice's CPUWeight: "idle" or 1-10000.
+func configSetWeight(path, w string) error {
+	if !weightValid(w) {
+		return fmt.Errorf("weight %q: want %s or an integer from %d to %d", w, weightIdle, weightMin, weightMax)
+	}
+	return configSet(path, "weight", w)
 }
