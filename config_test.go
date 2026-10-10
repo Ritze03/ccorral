@@ -292,7 +292,7 @@ func TestConfigSetTheme(t *testing.T) {
 	}
 }
 
-func TestConfigWeight(t *testing.T) {
+func TestConfigCPUWeight(t *testing.T) {
 	sys := fakeSys(t, smt10())
 	for _, tt := range []struct {
 		file    string
@@ -300,17 +300,17 @@ func TestConfigWeight(t *testing.T) {
 		wantLog bool
 	}{
 		{"", "idle", false},
-		{"weight=\n", "idle", false},
-		{"weight=idle\n", "idle", false},
-		{"weight = 100\n", "100", false},
-		{"weight=1\n", "1", false},
-		{"weight=10000\n", "10000", false},
-		{"weight=0\n", "idle", true},
-		{"weight=10001\n", "idle", true},
-		{"weight=-5\n", "idle", true},
-		{"weight=1.5\n", "idle", true},
-		{"weight=Idle\n", "idle", true},
-		{"weight=garbage\n", "idle", true},
+		{"cpuweight=\n", "idle", false},
+		{"cpuweight=idle\n", "idle", false},
+		{"cpuweight = 100\n", "100", false},
+		{"cpuweight=1\n", "1", false},
+		{"cpuweight=10000\n", "10000", false},
+		{"cpuweight=0\n", "idle", true},
+		{"cpuweight=10001\n", "idle", true},
+		{"cpuweight=-5\n", "idle", true},
+		{"cpuweight=1.5\n", "idle", true},
+		{"cpuweight=Idle\n", "idle", true},
+		{"cpuweight=garbage\n", "idle", true},
 	} {
 		var buf bytes.Buffer
 		log.SetOutput(&buf)
@@ -321,36 +321,156 @@ func TestConfigWeight(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if c.Weight != tt.want {
-			t.Errorf("%q: Weight = %q, want %q", tt.file, c.Weight, tt.want)
+		if c.CPUWeight != tt.want {
+			t.Errorf("%q: CPUWeight = %q, want %q", tt.file, c.CPUWeight, tt.want)
 		}
-		if got := strings.Contains(buf.String(), "config: ignoring weight="); got != tt.wantLog {
+		if got := strings.Contains(buf.String(), "config: ignoring cpuweight="); got != tt.wantLog {
 			t.Errorf("%q: logged = %v (%q)", tt.file, got, buf.String())
 		}
 	}
 	// Also set when the topology is unreadable.
-	if c, err := configLoad(cfgPath(t), t.TempDir()); err == nil || c.Weight != "idle" {
+	if c, err := configLoad(cfgPath(t), t.TempDir()); err == nil || c.CPUWeight != "idle" {
 		t.Errorf("no topology: %+v, %v", c, err)
 	}
 }
 
-func TestConfigSetWeight(t *testing.T) {
+func TestConfigSetCPUWeight(t *testing.T) {
 	path := cfgPath(t)
 	writeCfg(t, path, "mode=red\n")
 	for _, w := range []string{"", "0", "10001", "-1", "Idle", "abc", "1.5", "010", " 5"} {
-		if err := configSetWeight(path, w); err == nil || !strings.Contains(err.Error(), "want idle or an integer from 1 to 10000") {
-			t.Errorf("configSetWeight(%q) = %v, want error", w, err)
+		if err := configSetCPUWeight(path, w); err == nil || !strings.Contains(err.Error(), "want idle or an integer from 1 to 10000") {
+			t.Errorf("configSetCPUWeight(%q) = %v, want error", w, err)
 		}
 	}
 	if got := readCfg(t, path); got != "mode=red\n" {
 		t.Errorf("file changed by rejected sets: %q", got)
 	}
 	for _, w := range []string{"1", "10000", "idle", "100"} {
-		if err := configSetWeight(path, w); err != nil {
+		if err := configSetCPUWeight(path, w); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := readCfg(t, path); got != "mode=red\nweight=100\n" {
+	if got := readCfg(t, path); got != "mode=red\ncpuweight=100\n" {
+		t.Errorf("config = %q", got)
+	}
+}
+
+// parseTable runs configLoad over table rows, each a config file and the value
+// of one field wanted, and checks the "ignoring <key>=" log line.
+func parseTable(t *testing.T, key string, get func(Config) string, rows [][3]string) {
+	t.Helper()
+	sys := fakeSys(t, smt10())
+	for _, r := range rows {
+		file, want, wantLog := r[0], r[1], r[2] == "log"
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		path := cfgPath(t)
+		writeCfg(t, path, file)
+		c, err := configLoad(path, sys)
+		log.SetOutput(os.Stderr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := get(c); got != want {
+			t.Errorf("%q: %s = %q, want %q", file, key, got, want)
+		}
+		if got := strings.Contains(buf.String(), "config: ignoring "+key+"="); got != wantLog {
+			t.Errorf("%q: logged = %v (%q)", file, got, buf.String())
+		}
+	}
+}
+
+func TestConfigIOWeight(t *testing.T) {
+	parseTable(t, "ioweight", func(c Config) string { return c.IOWeight }, [][3]string{
+		{"", "10", ""},
+		{"ioweight=\n", "10", ""},
+		{"ioweight=1\n", "1", ""},
+		{"ioweight = 500\n", "500", ""},
+		{"ioweight=10000\n", "10000", ""},
+		{"ioweight=0\n", "10", "log"},
+		{"ioweight=10001\n", "10", "log"},
+		{"ioweight=-1\n", "10", "log"},
+		{"ioweight=idle\n", "10", "log"},
+		{"ioweight=1.5\n", "10", "log"},
+		{"ioweight=garbage\n", "10", "log"},
+	})
+	if c, err := configLoad(cfgPath(t), t.TempDir()); err == nil || c.IOWeight != "10" {
+		t.Errorf("no topology: %+v, %v", c, err)
+	}
+}
+
+func TestConfigSetIOWeight(t *testing.T) {
+	path := cfgPath(t)
+	writeCfg(t, path, "mode=red\n")
+	for _, w := range []string{"", "0", "10001", "-1", "idle", "1.5", "010", " 5"} {
+		if err := configSetIOWeight(path, w); err == nil || !strings.Contains(err.Error(), "want an integer from 1 to 10000") {
+			t.Errorf("configSetIOWeight(%q) = %v, want error", w, err)
+		}
+	}
+	if got := readCfg(t, path); got != "mode=red\n" {
+		t.Errorf("file changed by rejected sets: %q", got)
+	}
+	for _, w := range []string{"1", "10000", "10"} {
+		if err := configSetIOWeight(path, w); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := readCfg(t, path); got != "mode=red\nioweight=10\n" {
+		t.Errorf("config = %q", got)
+	}
+}
+
+func TestConfigMemoryHigh(t *testing.T) {
+	parseTable(t, "memoryhigh", func(c Config) string { return c.MemoryHigh }, [][3]string{
+		{"", "75%", ""},
+		{"memoryhigh=\n", "75%", ""},
+		{"memoryhigh=infinity\n", "infinity", ""},
+		{"memoryhigh = 50%\n", "50%", ""},
+		{"memoryhigh=1%\n", "1%", ""},
+		{"memoryhigh=100%\n", "100%", ""},
+		{"memoryhigh=16G\n", "16G", ""},
+		{"memoryhigh=512M\n", "512M", ""},
+		{"memoryhigh=100K\n", "100K", ""},
+		{"memoryhigh=2T\n", "2T", ""},
+		{"memoryhigh=1073741824\n", "1073741824", ""},
+		{"memoryhigh=0\n", "75%", "log"},
+		{"memoryhigh=0%\n", "75%", "log"},
+		{"memoryhigh=101%\n", "75%", "log"},
+		{"memoryhigh=%\n", "75%", "log"},
+		{"memoryhigh=-1\n", "75%", "log"},
+		{"memoryhigh=-5G\n", "75%", "log"},
+		{"memoryhigh=1.5G\n", "75%", "log"},
+		{"memoryhigh=12.5%\n", "75%", "log"},
+		{"memoryhigh=16GB\n", "75%", "log"},
+		{"memoryhigh=16g\n", "75%", "log"},
+		{"memoryhigh=16P\n", "75%", "log"},
+		{"memoryhigh=G\n", "75%", "log"},
+		{"memoryhigh=010\n", "75%", "log"},
+		{"memoryhigh=Infinity\n", "75%", "log"},
+		{"memoryhigh=max\n", "75%", "log"},
+	})
+	if c, err := configLoad(cfgPath(t), t.TempDir()); err == nil || c.MemoryHigh != "75%" {
+		t.Errorf("no topology: %+v, %v", c, err)
+	}
+}
+
+func TestConfigSetMemoryHigh(t *testing.T) {
+	path := cfgPath(t)
+	writeCfg(t, path, "mode=red\n")
+	for _, v := range []string{"", " ", "0", "0%", "101%", "-1", "1.5G", "16GB", "16P", "G", "max", "Infinity"} {
+		if err := configSetMemoryHigh(path, v); err == nil || !strings.Contains(err.Error(), "want infinity") {
+			t.Errorf("configSetMemoryHigh(%q) = %v, want error", v, err)
+		}
+	}
+	if got := readCfg(t, path); got != "mode=red\n" {
+		t.Errorf("file changed by rejected sets: %q", got)
+	}
+	for _, v := range []string{"infinity", "90%", "16G", "75%"} {
+		if err := configSetMemoryHigh(path, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := readCfg(t, path); got != "mode=red\nmemoryhigh=75%\n" {
 		t.Errorf("config = %q", got)
 	}
 }

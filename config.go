@@ -11,12 +11,15 @@ package main
 //	red=<cpulist>
 //	interval=<ms>
 //	theme=dark|light
-//	weight=idle|<1-10000>
+//	cpuweight=idle|<1-10000>
+//	ioweight=<1-10000>
+//	memoryhigh=infinity|<1-100>%|<bytes>[K|M|G|T]
 //
 // green means no limit, yellow and red mean "pin to that group". A missing or
 // empty group key means the default computed from the topology (cpuDefaults).
-// weight is the slice's CPUWeight in every mode; idle means it only gets CPU
-// time nothing else wants.
+// cpuweight, ioweight and memoryhigh are the slice's CPUWeight, IOWeight and
+// MemoryHigh in every mode; cpuweight=idle means it only gets CPU time nothing
+// else wants.
 // Blank lines, "#" comments and unknown keys are kept as they are on rewrite.
 
 import (
@@ -49,17 +52,43 @@ const (
 )
 
 // CPUWeight of claude.slice: "idle" or an integer weightMin..weightMax (systemd's
-// range; 100 is its normal weight). idle needs systemd 252+.
+// range; 100 is its normal weight). idle needs systemd 252+. IOWeight takes the
+// same range without idle.
 const (
 	weightIdle = "idle"
 	weightMin  = 1
 	weightMax  = 10000
+
+	ioWeightDefault    = "10"
+	memoryHighInfinity = "infinity"
+	memoryHighDefault  = "75%"
 )
 
-// weightValid says whether w is "idle" or a plain integer in the allowed range.
-func weightValid(w string) bool {
+// ioWeightValid says whether w is a plain integer in the allowed range.
+func ioWeightValid(w string) bool {
 	n, err := strconv.Atoi(w)
-	return w == weightIdle || (err == nil && n >= weightMin && n <= weightMax && strconv.Itoa(n) == w)
+	return err == nil && n >= weightMin && n <= weightMax && strconv.Itoa(n) == w
+}
+
+// cpuWeightValid says whether w is "idle" or a valid IO-style weight.
+func cpuWeightValid(w string) bool { return w == weightIdle || ioWeightValid(w) }
+
+// memoryHighValid says whether v is "infinity", a percentage 1-100 with "%", or
+// a plain positive integer with an optional K, M, G or T suffix (systemd's
+// 1024-based units). It is passed to systemd verbatim.
+func memoryHighValid(v string) bool {
+	if v == memoryHighInfinity {
+		return true
+	}
+	if p, ok := strings.CutSuffix(v, "%"); ok {
+		n, err := strconv.Atoi(p)
+		return err == nil && n >= 1 && n <= 100 && strconv.Itoa(n) == p
+	}
+	if len(v) > 0 && strings.Contains("KMGT", v[len(v)-1:]) {
+		v = v[:len(v)-1]
+	}
+	n, err := strconv.ParseUint(v, 10, 63)
+	return err == nil && n >= 1 && strconv.FormatUint(n, 10) == v
 }
 
 // configMu serializes read-modify-write within this process; the rename in
@@ -84,7 +113,9 @@ type Config struct {
 	RedExplicit    bool
 	IntervalMs     int    // sweep interval, intervalMin..intervalMax
 	Theme          string // themeLight or themeDark
-	Weight         string // CPUWeight: weightIdle or "1".."10000"
+	CPUWeight      string // weightIdle or "1".."10000"
+	IOWeight       string // "1".."10000"
+	MemoryHigh     string // memoryHighInfinity, "<n>%" or "<n>[KMGT]"
 }
 
 // Group is the CPU set a mode pins to; nil for green (no limit).
@@ -181,7 +212,7 @@ func configSet(path, key, value string) error {
 // the topology failing, in which case the groups are nil.
 func configLoad(path, sysRoot string) (Config, error) {
 	kv := configKV(path)
-	c := Config{Mode: modeYellow, IntervalMs: intervalDefault, Theme: themeDark, Weight: weightIdle}
+	c := Config{Mode: modeYellow, IntervalMs: intervalDefault, Theme: themeDark, CPUWeight: weightIdle, IOWeight: ioWeightDefault, MemoryHigh: memoryHighDefault}
 	switch kv["mode"] {
 	case modeGreen, modeYellow, modeRed:
 		c.Mode = kv["mode"]
@@ -200,11 +231,25 @@ func configLoad(path, sysRoot string) (Config, error) {
 	default:
 		log.Printf("config: ignoring theme=%q: want %s or %s", v, themeLight, themeDark)
 	}
-	if v := kv["weight"]; v != "" {
-		if weightValid(v) {
-			c.Weight = v
+	if v := kv["cpuweight"]; v != "" {
+		if cpuWeightValid(v) {
+			c.CPUWeight = v
 		} else {
-			log.Printf("config: ignoring weight=%q: want %s or an integer from %d to %d", v, weightIdle, weightMin, weightMax)
+			log.Printf("config: ignoring cpuweight=%q: want %s or an integer from %d to %d", v, weightIdle, weightMin, weightMax)
+		}
+	}
+	if v := kv["ioweight"]; v != "" {
+		if ioWeightValid(v) {
+			c.IOWeight = v
+		} else {
+			log.Printf("config: ignoring ioweight=%q: want an integer from %d to %d", v, weightMin, weightMax)
+		}
+	}
+	if v := kv["memoryhigh"]; v != "" {
+		if memoryHighValid(v) {
+			c.MemoryHigh = v
+		} else {
+			log.Printf("config: ignoring memoryhigh=%q: want %s, a percentage like 75%%, or a size like 16G", v, memoryHighInfinity)
 		}
 	}
 	cores, err := cpuCores(sysRoot)
@@ -288,10 +333,26 @@ func configSetTheme(path, theme string) error {
 	return fmt.Errorf("unknown theme %q", theme)
 }
 
-// configSetWeight persists the slice's CPUWeight: "idle" or 1-10000.
-func configSetWeight(path, w string) error {
-	if !weightValid(w) {
-		return fmt.Errorf("weight %q: want %s or an integer from %d to %d", w, weightIdle, weightMin, weightMax)
+// configSetCPUWeight persists the slice's CPUWeight: "idle" or 1-10000.
+func configSetCPUWeight(path, w string) error {
+	if !cpuWeightValid(w) {
+		return fmt.Errorf("cpuweight %q: want %s or an integer from %d to %d", w, weightIdle, weightMin, weightMax)
 	}
-	return configSet(path, "weight", w)
+	return configSet(path, "cpuweight", w)
+}
+
+// configSetIOWeight persists the slice's IOWeight: 1-10000.
+func configSetIOWeight(path, w string) error {
+	if !ioWeightValid(w) {
+		return fmt.Errorf("ioweight %q: want an integer from %d to %d", w, weightMin, weightMax)
+	}
+	return configSet(path, "ioweight", w)
+}
+
+// configSetMemoryHigh persists the slice's MemoryHigh: infinity, 1-100% or a size.
+func configSetMemoryHigh(path, v string) error {
+	if !memoryHighValid(v) {
+		return fmt.Errorf("memoryhigh %q: want %s, a percentage like 75%%, or a size like 16G", v, memoryHighInfinity)
+	}
+	return configSet(path, "memoryhigh", v)
 }

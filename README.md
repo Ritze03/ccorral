@@ -29,17 +29,26 @@ yellow=3-9,13-19
 red=7-9,17-19
 interval=5000
 theme=dark
-weight=idle
+cpuweight=idle
+ioweight=10
+memoryhigh=75%
 ```
 
 `yellow=` and `red=` are optional cpulists you can set by hand; a missing or empty key means
 the computed default, and an invalid list is ignored with a log line. `interval=` is the sweep
 interval in milliseconds, 500 to 10000, default 5000; anything else is ignored with a log line. `theme=` is the tray icon's outline: `dark` (default,
 white, for dark panels) or `light` (black, for light panels); anything else is ignored with a log line.
-`weight=` is the CPU weight of the Claude slice in every mode: `idle` (default) or a number from 1 to
+`cpuweight=` is the CPU weight of the Claude slice in every mode: `idle` (default) or a number from 1 to
 10000; anything else is ignored with a log line. `idle` means Claude only gets CPU time nothing else
 wants, so in green it can still use the whole machine while you are idle, but your own work always wins.
 100 is the normal systemd weight. `idle` needs systemd 252 or newer.
+`ioweight=` is the slice's I/O weight, 1 to 10000, default 10 (systemd's normal is 100), so your own disk
+access wins over Claude's. It only has an effect on disks using the BFQ I/O scheduler
+(`cat /sys/block/<dev>/queue/scheduler`); `none`, `mq-deadline` and `kyber` ignore it.
+`memoryhigh=` is the slice's soft memory limit: `infinity` (no limit), a percentage of RAM like `75%`
+(default) or a size like `16G` (suffixes K, M, G, T). Above it the kernel throttles the slice and reclaims its
+memory instead of letting it push the desktop into swap; it does not kill anything.
+Both are applied in every mode, with invalid values ignored with a log line.
 After editing the file, run `ccorral reload` so the daemon picks it up. Or skip the editing and
 use `ccorral settings` (below).
 
@@ -99,7 +108,7 @@ keeps its CPU limit until reboot; `systemctl --user revert claude.slice` drops i
 ccorral                  # same as: ccorral status
 ccorral green            # or: yellow / red
 ccorral reload           # re-read the config file and re-apply it
-ccorral settings         # terminal UI for the cores per mode, the sweep interval, the icon theme and the CPU weight
+ccorral settings         # terminal UI for the cores per mode, the sweep interval, the icon theme, the CPU and I/O weight and the memory limit
 ccorral daemon           # what the service runs
 ccorral help
 ```
@@ -156,11 +165,14 @@ core and a row each for Yellow and Red; `[x]` means the core is in that group. S
 always toggle together, and the last core of a group can't be unchecked. The third row is the
 sweep interval, 500 to 10000 ms in 500 ms steps. The fourth is the icon theme, `dark (white
 outline)` (default) or `light (black outline)`. The fifth is the CPU weight: left/right steps through `idle`, 1, 10, 50, 100
-(systemd's normal weight), 200, 500, 1000 and 10000; a value you set by hand in the file is shown as is.
+(systemd's normal weight), 200, 500, 1000 and 10000. The sixth is the I/O weight, the same
+steps without `idle`. The seventh is the memory limit: 25%, 50%, 60%, 75%, 90% and `infinity`. A value you
+set by hand in the file is shown as is; stepping from a hand-set weight goes to the next preset, from a hand-set
+size to 75%.
 
 | Key | Action |
 | --- | --- |
-| arrows or `h` `j` `k` `l` | move; on the Interval row left/right changes the value, on the Theme row it toggles, on the Weight row it steps |
+| arrows or `h` `j` `k` `l` | move; on the Interval row left/right changes the value, on the Theme row it toggles, on the CPU wt, IO wt and Mem high rows it steps |
 | space or enter | toggle the core under the cursor, or the theme |
 | `+` / `-` | change the interval |
 | `d` | reset the row to its default |

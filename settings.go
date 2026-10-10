@@ -1,7 +1,7 @@
 package main
 
 // settings.go is `ccorral settings`: a small full-screen terminal UI over the
-// config file (config.go) for the two core groups, the sweep interval, the icon theme and the CPU weight. Mode
+// config file (config.go) for the two core groups, the sweep interval, the icon theme and the slice's CPU weight, IO weight and memory limit. Mode
 // switching is not here; that is the tray and `ccorral green|yellow|red`.
 //
 // It is a separate, short-lived process on purpose: every change is written
@@ -54,13 +54,19 @@ const (
 	settingsRowRed
 	settingsRowInterval
 	settingsRowTheme
-	settingsRowWeight
+	settingsRowCPUWeight
+	settingsRowIOWeight
+	settingsRowMemoryHigh
 	settingsRows
 )
 
-// settingsWeights are the presets left/right step through, lowest first (idle
-// is below 1). 100 is systemd's normal weight.
-var settingsWeights = [...]string{weightIdle, "1", "10", "50", "100", "200", "500", "1000", "10000"}
+// The presets left/right step through, lowest first (idle is below 1). 100 is
+// systemd's normal weight.
+var (
+	settingsCPUWeights = []string{weightIdle, "1", "10", "50", "100", "200", "500", "1000", "10000"}
+	settingsIOWeights  = settingsCPUWeights[1:]
+	settingsMemory     = []string{"25%", "50%", "60%", memoryHighDefault, "90%", memoryHighInfinity}
+)
 
 var (
 	settingsGroupNames = [...]string{modeYellow, modeRed}
@@ -74,7 +80,9 @@ type settingsState struct {
 	yellow, red []int
 	interval    int
 	theme       string // themeLight or themeDark
-	weight      string // weightIdle or "1".."10000"
+	cpuWeight   string // weightIdle or "1".."10000"
+	ioWeight    string // "1".."10000"
+	memoryHigh  string // memoryHighInfinity, "<n>%" or "<n>[KMGT]"
 	row, col    int
 	status      string
 }
@@ -89,7 +97,8 @@ func settingsLoad(path, sysRoot string) (settingsState, error) {
 	if err != nil {
 		return settingsState{}, err
 	}
-	return settingsState{cores: cores, yellow: c.Yellow, red: c.Red, interval: c.IntervalMs, theme: c.Theme, weight: c.Weight}, nil
+	return settingsState{cores: cores, yellow: c.Yellow, red: c.Red, interval: c.IntervalMs, theme: c.Theme,
+		cpuWeight: c.CPUWeight, ioWeight: c.IOWeight, memoryHigh: c.MemoryHigh}, nil
 }
 
 // group is the CPU list of the group row r.
@@ -151,9 +160,15 @@ func settingsRender(s settingsState) string {
 	fmt.Fprintf(&b, "  %-9s", "Theme")
 	b.WriteString(cur(s.row == settingsRowTheme, theme) + "\n")
 
-	fmt.Fprintf(&b, "  %-9s", "Weight")
-	b.WriteString(cur(s.row == settingsRowWeight, s.weight))
+	fmt.Fprintf(&b, "  %-9s", "CPU wt")
+	b.WriteString(cur(s.row == settingsRowCPUWeight, s.cpuWeight))
 	b.WriteString("   (idle, 1–10000; 100 = systemd default)\n")
+	fmt.Fprintf(&b, "  %-9s", "IO wt")
+	b.WriteString(cur(s.row == settingsRowIOWeight, s.ioWeight))
+	b.WriteString("   (1–10000; only on BFQ disks)\n")
+	fmt.Fprintf(&b, "  %-9s", "Mem high")
+	b.WriteString(cur(s.row == settingsRowMemoryHigh, s.memoryHigh))
+	b.WriteString("   (infinity, 1–100%, or a size like 16G)\n")
 
 	b.WriteString("\n  " + settingsHint + "\n")
 	b.WriteString("  " + s.status + "\n")
@@ -198,8 +213,8 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 			return settingsStep(s, step)
 		case settingsRowTheme:
 			return settingsTheme(s)
-		case settingsRowWeight:
-			return settingsWeightStep(s, step)
+		case settingsRowCPUWeight, settingsRowIOWeight, settingsRowMemoryHigh:
+			return settingsPreset(s, step)
 		}
 		if c := s.col + step; c >= 0 && c < len(s.cores) {
 			s.col = c
@@ -216,7 +231,7 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 		switch s.row {
 		case settingsRowTheme:
 			return settingsTheme(s)
-		case settingsRowInterval, settingsRowWeight:
+		case settingsRowInterval, settingsRowCPUWeight, settingsRowIOWeight, settingsRowMemoryHigh:
 		default:
 			return settingsToggle(s)
 		}
@@ -229,8 +244,12 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 			s.red = red
 		case settingsRowInterval:
 			s.interval = intervalDefault
-		case settingsRowWeight:
-			s.weight = weightIdle
+		case settingsRowCPUWeight:
+			s.cpuWeight = weightIdle
+		case settingsRowIOWeight:
+			s.ioWeight = ioWeightDefault
+		case settingsRowMemoryHigh:
+			s.memoryHigh = memoryHighDefault
 		default:
 			s.theme = themeDark
 		}
@@ -249,26 +268,39 @@ func settingsTheme(s settingsState) (settingsState, settingsAct) {
 	return s, settingsActWrite
 }
 
-// settingsWeightStep moves the weight to the next preset above (dir > 0) or
-// below it. A hand-set value that is not a preset is stepped from its place in
-// the order, so it is never skipped over. Idle ranks below every number.
-func settingsWeightStep(s settingsState, dir int) (settingsState, settingsAct) {
-	rank := func(w string) int { // idle is 0, below weightMin
-		n, _ := strconv.Atoi(w)
-		return n
+// settingsPreset moves the weight or memory row under the cursor one preset in
+// dir. A hand-set weight that is not a preset is stepped from its place in the
+// order (idle ranks below every number), so it is never skipped over; a
+// hand-set memory limit can't be compared with the presets, so it jumps to the
+// default.
+func settingsPreset(s settingsState, dir int) (settingsState, settingsAct) {
+	cur, presets, name := &s.cpuWeight, settingsCPUWeights, "CPU weight"
+	switch s.row {
+	case settingsRowIOWeight:
+		cur, presets, name = &s.ioWeight, settingsIOWeights, "IO weight"
+	case settingsRowMemoryHigh:
+		cur, presets, name = &s.memoryHigh, settingsMemory, "memory limit"
 	}
-	cur := rank(s.weight)
 	next := ""
-	for _, w := range settingsWeights {
-		if (dir > 0 && rank(w) > cur && next == "") || (dir < 0 && rank(w) < cur) {
-			next = w // up: the first above; down: the last below
+	if i := slices.Index(presets, *cur); i >= 0 {
+		if j := i + dir; j >= 0 && j < len(presets) {
+			next = presets[j]
+		}
+	} else if s.row == settingsRowMemoryHigh {
+		next = memoryHighDefault
+	} else {
+		rank := func(w string) int { n, _ := strconv.Atoi(w); return n }
+		for _, p := range presets {
+			if (dir > 0 && rank(p) > rank(*cur) && next == "") || (dir < 0 && rank(p) < rank(*cur)) {
+				next = p // up: the first above; down: the last below
+			}
 		}
 	}
 	if next == "" {
-		s.status = "weight is already at its limit (" + settingsWeights[0] + " to " + settingsWeights[len(settingsWeights)-1] + ")"
+		s.status = name + " is already at its limit (" + presets[0] + " to " + presets[len(presets)-1] + ")"
 		return s, settingsActNone
 	}
-	s.weight = next
+	*cur = next
 	return s, settingsActWrite
 }
 
@@ -325,8 +357,12 @@ func settingsSave(path, sysRoot string, s settingsState, act settingsAct, reload
 		err = configSetInterval(path, s.interval)
 	case s.row == settingsRowTheme:
 		err = configSetTheme(path, s.theme)
-	case s.row == settingsRowWeight:
-		err = configSetWeight(path, s.weight)
+	case s.row == settingsRowCPUWeight:
+		err = configSetCPUWeight(path, s.cpuWeight)
+	case s.row == settingsRowIOWeight:
+		err = configSetIOWeight(path, s.ioWeight)
+	case s.row == settingsRowMemoryHigh:
+		err = configSetMemoryHigh(path, s.memoryHigh)
 	case act == settingsActReset:
 		err = configResetGroup(path, settingsGroupNames[s.row])
 	default:

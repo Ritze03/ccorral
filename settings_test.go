@@ -54,7 +54,9 @@ func TestSettingsLoadAndRender(t *testing.T) {
 		"Red      [ ][ ][ ][ ][ ][ ][ ][x][x][x]   7-9,17-19",
 		"Interval 5000 ms   (500–10000)",
 		"Theme    dark (white outline)",
-		"Weight   idle   (idle, 1–10000; 100 = systemd default)",
+		"CPU wt   idle   (idle, 1–10000; 100 = systemd default)",
+		"IO wt    10   (1–10000; only on BFQ disks)",
+		"Mem high 75%   (infinity, 1–100%, or a size like 16G)",
 		settingsHint,
 	} {
 		if !strings.Contains(out, want) {
@@ -93,8 +95,8 @@ func TestSettingsMove(t *testing.T) {
 	if s.col != 9 {
 		t.Errorf("col %d, want it stopped at the last core (9)", s.col)
 	}
-	s, act := press(s, "down", "down", "down", "down")
-	if s.row != settingsRowWeight || act != settingsActNone || s.col != 9 {
+	s, act := press(s, "down", "down", "down", "down", "down", "down", "down")
+	if s.row != settingsRowMemoryHigh || act != settingsActNone || s.col != 9 {
 		t.Errorf("row %d col %d act %d", s.row, s.col, act)
 	}
 }
@@ -208,7 +210,8 @@ func TestSettingsInterval(t *testing.T) {
 
 func TestSettingsDefault(t *testing.T) {
 	s, _, _ := settingsFixture(t)
-	s.yellow, s.red, s.interval, s.weight = []int{0, 10}, []int{1, 11}, 1500, "250"
+	s.yellow, s.red, s.interval, s.cpuWeight = []int{0, 10}, []int{1, 11}, 1500, "250"
+	s.ioWeight, s.memoryHigh = "250", "16G"
 
 	for _, tc := range []struct {
 		row  int
@@ -219,7 +222,9 @@ func TestSettingsDefault(t *testing.T) {
 		}},
 		{settingsRowRed, func(s settingsState) bool { return reflect.DeepEqual(s.red, []int{7, 8, 9, 17, 18, 19}) }},
 		{settingsRowInterval, func(s settingsState) bool { return s.interval == intervalDefault }},
-		{settingsRowWeight, func(s settingsState) bool { return s.weight == weightIdle }},
+		{settingsRowCPUWeight, func(s settingsState) bool { return s.cpuWeight == weightIdle }},
+		{settingsRowIOWeight, func(s settingsState) bool { return s.ioWeight == "10" }},
+		{settingsRowMemoryHigh, func(s settingsState) bool { return s.memoryHigh == "75%" }},
 	} {
 		s.row = tc.row
 		var act settingsAct
@@ -400,38 +405,38 @@ func TestSettingsTheme(t *testing.T) {
 	if got := readCfg(t, path); got != "theme=dark\n" || calls != 2 {
 		t.Errorf("config %q calls %d", got, calls)
 	}
-	// The weight row is below it, and nothing is below that.
-	if s, _ = press(s, "down", "down"); s.row != settingsRowWeight {
+	// The limit rows are below it, and nothing is below the last.
+	if s, _ = press(s, "down", "down", "down", "down"); s.row != settingsRowMemoryHigh {
 		t.Errorf("row %d", s.row)
 	}
 }
 
-func TestSettingsWeight(t *testing.T) {
+func TestSettingsCPUWeight(t *testing.T) {
 	s, path, sys := settingsFixture(t)
-	s.row = settingsRowWeight
-	if s.weight != weightIdle {
-		t.Fatalf("default weight %q", s.weight)
+	s.row = settingsRowCPUWeight
+	if s.cpuWeight != weightIdle {
+		t.Fatalf("default weight %q", s.cpuWeight)
 	}
 	// Stepping up through every preset, then stopped at the top.
-	for _, want := range settingsWeights[1:] {
+	for _, want := range settingsCPUWeights[1:] {
 		var act settingsAct
 		s, act = press(s, "right")
-		if s.weight != want || act != settingsActWrite {
-			t.Fatalf("right: weight %q act %d, want %q", s.weight, act, want)
+		if s.cpuWeight != want || act != settingsActWrite {
+			t.Fatalf("right: weight %q act %d, want %q", s.cpuWeight, act, want)
 		}
 	}
-	if n, act := press(s, "right"); n.weight != "10000" || act != settingsActNone || n.status == "" {
-		t.Errorf("past the top: %q act %d status %q", n.weight, act, n.status)
+	if n, act := press(s, "right"); n.cpuWeight != "10000" || act != settingsActNone || n.status == "" {
+		t.Errorf("past the top: %q act %d status %q", n.cpuWeight, act, n.status)
 	}
 	// And back down to idle, stopped at the bottom.
-	for i := len(settingsWeights) - 2; i >= 0; i-- {
+	for i := len(settingsCPUWeights) - 2; i >= 0; i-- {
 		s, _ = press(s, "left")
-		if s.weight != settingsWeights[i] {
-			t.Fatalf("left: weight %q, want %q", s.weight, settingsWeights[i])
+		if s.cpuWeight != settingsCPUWeights[i] {
+			t.Fatalf("left: weight %q, want %q", s.cpuWeight, settingsCPUWeights[i])
 		}
 	}
-	if n, act := press(s, "left"); n.weight != weightIdle || act != settingsActNone || n.status == "" {
-		t.Errorf("past the bottom: %q act %d status %q", n.weight, act, n.status)
+	if n, act := press(s, "left"); n.cpuWeight != weightIdle || act != settingsActNone || n.status == "" {
+		t.Errorf("past the bottom: %q act %d status %q", n.cpuWeight, act, n.status)
 	}
 	// A value that is not a preset is shown as is and stepped from its place.
 	for _, tt := range []struct{ from, key, want string }{
@@ -440,23 +445,23 @@ func TestSettingsWeight(t *testing.T) {
 		{"7500", "right", "10000"}, {"7500", "left", "1000"},
 		{"20000", "left", "10000"},
 	} {
-		s.weight = tt.from
-		if !strings.Contains(plain(settingsRender(s)), "Weight   "+tt.from+" ") {
+		s.cpuWeight = tt.from
+		if !strings.Contains(plain(settingsRender(s)), "CPU wt   "+tt.from+" ") {
 			t.Errorf("%s not shown as is:\n%s", tt.from, plain(settingsRender(s)))
 		}
-		if n, act := press(s, tt.key); n.weight != tt.want || act != settingsActWrite {
-			t.Errorf("%s %s: %q act %d, want %q", tt.from, tt.key, n.weight, act, tt.want)
+		if n, act := press(s, tt.key); n.cpuWeight != tt.want || act != settingsActWrite {
+			t.Errorf("%s %s: %q act %d, want %q", tt.from, tt.key, n.cpuWeight, act, tt.want)
 		}
 	}
-	s.weight = "5000"
-	if n, _ := press(s, "right"); n.weight != "10000" {
-		t.Errorf("5000 right: %q", n.weight)
+	s.cpuWeight = "5000"
+	if n, _ := press(s, "right"); n.cpuWeight != "10000" {
+		t.Errorf("5000 right: %q", n.cpuWeight)
 	}
 	// Above the top, right goes nowhere; space and inc/dec are not for this row.
-	s.weight = "10000"
+	s.cpuWeight = "10000"
 	for _, k := range []string{"toggle", "inc", "dec"} {
-		if n, act := press(s, k); n.weight != "10000" || act != settingsActNone {
-			t.Errorf("%s: %q act %d", k, n.weight, act)
+		if n, act := press(s, k); n.cpuWeight != "10000" || act != settingsActNone {
+			t.Errorf("%s: %q act %d", k, n.cpuWeight, act)
 		}
 	}
 	// Saved immediately, reload sent, and a fresh process sees it.
@@ -464,19 +469,140 @@ func TestSettingsWeight(t *testing.T) {
 	reload := func() error { calls++; return nil }
 	s, act := press(s, "left") // 1000
 	s = settingsSave(path, sys, s, act, reload)
-	if got := readCfg(t, path); got != "weight=1000\n" || calls != 1 || s.status != settingsReloadedOK {
+	if got := readCfg(t, path); got != "cpuweight=1000\n" || calls != 1 || s.status != settingsReloadedOK {
 		t.Errorf("config %q calls %d status %q", got, calls, s.status)
 	}
-	if n, err := settingsLoad(path, sys); err != nil || n.weight != "1000" {
+	if n, err := settingsLoad(path, sys); err != nil || n.cpuWeight != "1000" {
 		t.Errorf("reload from disk: %+v err %v", n, err)
 	}
 	// d resets to idle and saves it.
 	s, act = press(s, "default")
-	if s.weight != weightIdle || act != settingsActReset {
-		t.Fatalf("default: weight %q act %d", s.weight, act)
+	if s.cpuWeight != weightIdle || act != settingsActReset {
+		t.Fatalf("default: weight %q act %d", s.cpuWeight, act)
 	}
 	settingsSave(path, sys, s, act, reload)
-	if got := readCfg(t, path); got != "weight=idle\n" || calls != 2 {
+	if got := readCfg(t, path); got != "cpuweight=idle\n" || calls != 2 {
+		t.Errorf("config %q calls %d", got, calls)
+	}
+}
+
+func TestSettingsIOWeight(t *testing.T) {
+	s, path, sys := settingsFixture(t)
+	s.row = settingsRowIOWeight
+	if s.ioWeight != "10" {
+		t.Fatalf("default ioweight %q", s.ioWeight)
+	}
+	// Down to the bottom of the presets (no idle here) and stopped.
+	s, act := press(s, "left")
+	if s.ioWeight != "1" || act != settingsActWrite {
+		t.Fatalf("left: %q act %d", s.ioWeight, act)
+	}
+	if n, act := press(s, "left"); n.ioWeight != "1" || act != settingsActNone || n.status == "" {
+		t.Errorf("past the bottom: %q act %d status %q", n.ioWeight, act, n.status)
+	}
+	// Up through every preset to the top.
+	for _, want := range settingsIOWeights[1:] {
+		s, act = press(s, "right")
+		if s.ioWeight != want || act != settingsActWrite {
+			t.Fatalf("right: %q act %d, want %q", s.ioWeight, act, want)
+		}
+	}
+	if n, act := press(s, "right"); n.ioWeight != "10000" || act != settingsActNone || n.status == "" {
+		t.Errorf("past the top: %q act %d status %q", n.ioWeight, act, n.status)
+	}
+	// Off-preset values are shown as is and stepped from their place.
+	for _, tt := range []struct{ from, key, want string }{
+		{"75", "right", "100"}, {"75", "left", "50"}, {"3", "left", "1"}, {"3", "right", "10"},
+	} {
+		s.ioWeight = tt.from
+		if !strings.Contains(plain(settingsRender(s)), "IO wt    "+tt.from+" ") {
+			t.Errorf("%s not shown as is:\n%s", tt.from, plain(settingsRender(s)))
+		}
+		if n, act := press(s, tt.key); n.ioWeight != tt.want || act != settingsActWrite {
+			t.Errorf("%s %s: %q act %d, want %q", tt.from, tt.key, n.ioWeight, act, tt.want)
+		}
+	}
+	for _, k := range []string{"toggle", "inc", "dec"} {
+		if n, act := press(s, k); n.ioWeight != s.ioWeight || act != settingsActNone {
+			t.Errorf("%s: %q act %d", k, n.ioWeight, act)
+		}
+	}
+	// Saved immediately; d goes back to 10.
+	calls := 0
+	reload := func() error { calls++; return nil }
+	s.ioWeight = "10"
+	s, act = press(s, "right") // 50
+	s = settingsSave(path, sys, s, act, reload)
+	if got := readCfg(t, path); got != "ioweight=50\n" || calls != 1 || s.status != settingsReloadedOK {
+		t.Errorf("config %q calls %d status %q", got, calls, s.status)
+	}
+	if n, err := settingsLoad(path, sys); err != nil || n.ioWeight != "50" {
+		t.Errorf("reload from disk: %+v err %v", n, err)
+	}
+	s, act = press(s, "default")
+	if s.ioWeight != "10" || act != settingsActReset {
+		t.Fatalf("default: %q act %d", s.ioWeight, act)
+	}
+	settingsSave(path, sys, s, act, reload)
+	if got := readCfg(t, path); got != "ioweight=10\n" || calls != 2 {
+		t.Errorf("config %q calls %d", got, calls)
+	}
+}
+
+func TestSettingsMemoryHigh(t *testing.T) {
+	s, path, sys := settingsFixture(t)
+	s.row = settingsRowMemoryHigh
+	if s.memoryHigh != "75%" {
+		t.Fatalf("default memoryhigh %q", s.memoryHigh)
+	}
+	s, act := press(s, "left", "left", "left", "left") // 60, 50, 25, stays
+	if s.memoryHigh != "25%" || act != settingsActNone || s.status == "" {
+		t.Errorf("bottom: %q act %d status %q", s.memoryHigh, act, s.status)
+	}
+	for _, want := range settingsMemory[1:] {
+		s, act = press(s, "right")
+		if s.memoryHigh != want || act != settingsActWrite {
+			t.Fatalf("right: %q act %d, want %q", s.memoryHigh, act, want)
+		}
+	}
+	if s.memoryHigh != "infinity" {
+		t.Fatalf("top %q", s.memoryHigh)
+	}
+	if n, act := press(s, "right"); n.memoryHigh != "infinity" || act != settingsActNone || n.status == "" {
+		t.Errorf("past the top: %q act %d status %q", n.memoryHigh, act, n.status)
+	}
+	// A hand-set size is shown as is; either arrow jumps to 75%.
+	s.memoryHigh = "16G"
+	if !strings.Contains(plain(settingsRender(s)), "Mem high 16G ") {
+		t.Errorf("16G not shown as is:\n%s", plain(settingsRender(s)))
+	}
+	for _, k := range []string{"left", "right"} {
+		if n, act := press(s, k); n.memoryHigh != "75%" || act != settingsActWrite {
+			t.Errorf("16G %s: %q act %d", k, n.memoryHigh, act)
+		}
+	}
+	for _, k := range []string{"toggle", "inc", "dec"} {
+		if n, act := press(s, k); n.memoryHigh != "16G" || act != settingsActNone {
+			t.Errorf("%s: %q act %d", k, n.memoryHigh, act)
+		}
+	}
+	// Saved immediately; d goes back to 75%.
+	calls := 0
+	reload := func() error { calls++; return nil }
+	s, act = press(s, "right", "right") // 75%, 90%
+	s = settingsSave(path, sys, s, act, reload)
+	if got := readCfg(t, path); got != "memoryhigh=90%\n" || calls != 1 || s.status != settingsReloadedOK {
+		t.Errorf("config %q calls %d status %q", got, calls, s.status)
+	}
+	if n, err := settingsLoad(path, sys); err != nil || n.memoryHigh != "90%" {
+		t.Errorf("reload from disk: %+v err %v", n, err)
+	}
+	s, act = press(s, "default")
+	if s.memoryHigh != "75%" || act != settingsActReset {
+		t.Fatalf("default: %q act %d", s.memoryHigh, act)
+	}
+	settingsSave(path, sys, s, act, reload)
+	if got := readCfg(t, path); got != "memoryhigh=75%\n" || calls != 2 {
 		t.Errorf("config %q calls %d", got, calls)
 	}
 }

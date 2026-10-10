@@ -25,18 +25,22 @@ func newTestSlice(t *testing.T) (*sliceBackend, *[][]string) {
 	return b, &calls
 }
 
-func wantArgs(cpulist string) []string { return wantArgsW(cpulist, "idle") }
+// wantArgs is the argv with the default weights and memory limit.
+func wantArgs(cpulist string) []string { return wantArgsW(cpulist, "idle", "10", "75%") }
 
-func wantArgsW(cpulist, weight string) []string {
-	return []string{"--user", "set-property", "--runtime", "claude.slice", "AllowedCPUs=" + cpulist, "CPUWeight=" + weight}
+func wantArgsW(cpulist, cpu, io, mem string) []string {
+	return []string{"--user", "set-property", "--runtime", "claude.slice", "AllowedCPUs=" + cpulist,
+		"CPUWeight=" + cpu, "IOWeight=" + io, "MemoryHigh=" + mem}
 }
 
 func TestSliceArgs(t *testing.T) {
-	if got := sliceArgs([]int{3, 4, 5, 13, 14, 15}, "idle"); !reflect.DeepEqual(got, wantArgs("3-5,13-15")) {
+	def := Config{CPUWeight: "idle", IOWeight: "10", MemoryHigh: "75%"}
+	if got := sliceArgs([]int{3, 4, 5, 13, 14, 15}, def); !reflect.DeepEqual(got, wantArgs("3-5,13-15")) {
 		t.Errorf("group: %v", got)
 	}
-	if got := sliceArgs([]int{0, 1}, "100"); !reflect.DeepEqual(got, wantArgsW("0-1", "100")) {
-		t.Errorf("weight 100: %v", got)
+	c := Config{CPUWeight: "100", IOWeight: "500", MemoryHigh: "16G"}
+	if got := sliceArgs([]int{0, 1}, c); !reflect.DeepEqual(got, wantArgsW("0-1", "100", "500", "16G")) {
+		t.Errorf("set values: %v", got)
 	}
 }
 
@@ -45,9 +49,9 @@ func TestSliceModes(t *testing.T) {
 	tests := []struct {
 		mode, cpulist, status string
 	}{
-		{modeYellow, "3-9,13-19", "yellow 3-9,13-19 weight=idle"},
-		{modeRed, "7-9,17-19", "red 7-9,17-19 weight=idle"},
-		{modeGreen, "0-19", "green 0-19 weight=idle"},
+		{modeYellow, "3-9,13-19", "yellow 3-9,13-19 cpu=idle io=10 mem=75%"},
+		{modeRed, "7-9,17-19", "red 7-9,17-19 cpu=idle io=10 mem=75%"},
+		{modeGreen, "0-19", "green 0-19 cpu=idle io=10 mem=75%"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.mode, func(t *testing.T) {
@@ -68,26 +72,28 @@ func TestSliceModes(t *testing.T) {
 	}
 }
 
-// The weight from the config goes out in every mode, green included.
-func TestSliceWeight(t *testing.T) {
+// The weights and memory limit from the config go out in every mode, green included.
+func TestSliceLimits(t *testing.T) {
 	for _, tt := range []struct{ mode, cpulist string }{
 		{modeGreen, "0-19"}, {modeYellow, "3-9,13-19"}, {modeRed, "7-9,17-19"},
 	} {
 		t.Run(tt.mode, func(t *testing.T) {
 			b, calls := newTestSlice(t)
-			writeCfg(t, b.path, "weight=50\n")
+			writeCfg(t, b.path, "cpuweight=50\nioweight=500\nmemoryhigh=16G\n")
 			if err := b.SetMode(tt.mode); err != nil {
 				t.Fatal(err)
 			}
-			if want := [][]string{wantArgsW(tt.cpulist, "50")}; !reflect.DeepEqual(*calls, want) {
+			if want := [][]string{wantArgsW(tt.cpulist, "50", "500", "16G")}; !reflect.DeepEqual(*calls, want) {
 				t.Errorf("argv = %v, want %v", *calls, want)
 			}
-			if got, want := b.Status(), tt.mode+" "+tt.cpulist+" weight=50"; got != want {
+			if got, want := b.Status(), tt.mode+" "+tt.cpulist+" cpu=50 io=500 mem=16G"; got != want {
 				t.Errorf("Status = %q, want %q", got, want)
 			}
-			// A changed weight is picked up by Reload.
-			if err := configSetWeight(b.path, "idle"); err != nil {
-				t.Fatal(err)
+			// Changed limits are picked up by Reload.
+			for _, err := range []error{configSetCPUWeight(b.path, "idle"), configSetIOWeight(b.path, "10"), configSetMemoryHigh(b.path, "75%")} {
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := b.Reload(); err != nil {
 				t.Fatal(err)
@@ -128,7 +134,7 @@ func TestSliceReload(t *testing.T) {
 	if !reflect.DeepEqual(*calls, want) {
 		t.Errorf("argv = %v, want %v", *calls, want)
 	}
-	if got := b.Status(); got != "yellow 1-2,11-12 weight=idle" {
+	if got := b.Status(); got != "yellow 1-2,11-12 cpu=idle io=10 mem=75%" {
 		t.Errorf("Status = %q", got)
 	}
 }
@@ -150,7 +156,7 @@ func TestSliceRunnerError(t *testing.T) {
 	if got := readCfg(t, b.path); got != "mode=red\n" {
 		t.Errorf("config = %q", got)
 	}
-	if got := b.Status(); got != "yellow 3-9,13-19 weight=idle" {
+	if got := b.Status(); got != "yellow 3-9,13-19 cpu=idle io=10 mem=75%" {
 		t.Errorf("Status = %q, want the last applied", got)
 	}
 }
