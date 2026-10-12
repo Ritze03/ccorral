@@ -1,10 +1,11 @@
 # ccorral
 
 Pins Claude Code CLI sessions, and everything they spawn (builds, tests, MCP servers), to a
-chosen set of CPU cores, so the rest of the desktop stays responsive. Linux only.
+chosen set of CPU cores, with a low CPU and I/O weight and a soft memory limit, so the rest of
+the desktop stays responsive. Linux only.
 
-It works through `AllowedCPUs` on the systemd user slice `claude.slice`, so a change applies
-live to running sessions and their children. A daemon sweeps every 5 s by default (`interval=`, 500 to 10000 ms) and moves Claude
+It works through `AllowedCPUs`, `CPUWeight`, `IOWeight` and `MemoryHigh` on the systemd user
+slice `claude.slice`, so a change applies live to running sessions and their children. A daemon sweeps every 5 s by default (`interval=`, 500 to 10000 ms) and moves Claude
 sessions that were started outside the slice (tmux, other terminals, anything that doesn't use
 the wrapper below) into it. Claude is recognised by its executable under
 `~/.local/share/claude/versions/`.
@@ -133,7 +134,6 @@ claude() { systemd-run --user --scope --slice=claude.slice -q -- claude "$@"; }
 - A background daemon a session started before it was moved, and that has since reparented
   away (a gradle or sccache server, say), stays outside the slice.
 - Claude sessions from the Claude desktop app are not handled.
-- Only cores are limited. There is no CPU or IO priority.
 - A process that set its own CPU affinity (e.g. with `taskset`) keeps it. Restart it.
 
 ## Tray icon
