@@ -110,6 +110,7 @@ ccorral                  # same as: ccorral status
 ccorral green            # or: yellow / red
 ccorral reload           # re-read the config file and re-apply it
 ccorral settings         # terminal UI for the cores per mode, the sweep interval, the icon theme, the CPU and I/O weight and the memory limit
+ccorral -- CMD [ARGS...] # run CMD inside the slice (same: ccorral run [--] CMD [ARGS...])
 ccorral daemon           # what the service runs
 ccorral help
 ```
@@ -120,19 +121,37 @@ The daemon logs to the journal:
 journalctl --user -u ccorral
 ```
 
+## Running commands in the slice
+
+```sh
+ccorral -- npm run dev
+```
+
+Runs the command inside `claude.slice`, so it gets the slice's cores and weights from its first
+instruction. This is the one way to launch anything long-running (dev servers, builds,
+background daemons) so it can't escape the slice; agents should use it for those. `ccorral run
+CMD` is the same, with the `--` optional.
+
+It replaces itself with the command (via `systemd-run --user --scope`), so stdin, the terminal,
+signals and the exit code behave as if you had run the command directly. If it is already
+inside the slice, it just runs the command, so nesting is harmless. A missing command exits 127.
+
 ## Instant placement (optional)
 
 Without this, a new Claude session is moved into the slice by the next sweep, within one sweep interval (5 s by default, `interval=` 500–10000 ms). To
 start it inside the slice from the first moment, wrap `claude` in your `.zshrc` or `.bashrc`:
 
 ```sh
-claude() { systemd-run --user --scope --slice=claude.slice -q -- claude "$@"; }
+claude() { ccorral -- claude "$@"; }
 ```
+
+This doesn't recurse: the command is looked up in `PATH`, where shell functions don't count.
 
 ## Known limits
 
 - A background daemon a session started before it was moved, and that has since reparented
-  away (a gradle or sccache server, say), stays outside the slice.
+  away (a gradle or sccache server, say), stays outside the slice. Start such things with
+  `ccorral -- CMD` to avoid it.
 - Claude sessions from the Claude desktop app are not handled.
 - A process that set its own CPU affinity (e.g. with `taskset`) keeps it. Restart it.
 
@@ -186,5 +205,5 @@ done here, use the tray or `ccorral green|yellow|red`.
 ## Layout
 
 A flat `package main` at the repo root, one file per area: `cpus.go`, `config.go`,
-`sweep.go`, `slice.go`, `ipc.go`, `tray.go`, `settings.go`, `install.go` and `main.go`. Tests sit next to them
+`sweep.go`, `slice.go`, `ipc.go`, `tray.go`, `settings.go`, `run.go`, `install.go` and `main.go`. Tests sit next to them
 (`go test ./...`).

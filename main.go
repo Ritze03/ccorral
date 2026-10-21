@@ -21,6 +21,7 @@ usage:
   ccorral green|yellow|red      switch mode (green = all CPUs)
   ccorral reload                re-read the config and re-apply it
   ccorral settings              terminal UI: cores per mode, sweep interval
+  ccorral -- CMD [ARGS...]      run CMD inside claude.slice (alias: ccorral run CMD)
   ccorral daemon                run the daemon (systemd user unit ccorral.service)
   ccorral install               install the binary and the systemd user unit
   ccorral uninstall             remove them again`
@@ -53,6 +54,12 @@ func main() {
 			os.Exit(2)
 		}
 		os.Exit(RunSettings(os.Stdin, os.Stdout))
+	case "run", "--":
+		args := os.Args[2:]
+		if cmd == "run" && len(args) > 0 && args[0] == "--" {
+			args = args[1:]
+		}
+		os.Exit(runMain(args))
 	case "daemon":
 		os.Exit(runDaemon())
 	case "install":
