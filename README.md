@@ -75,6 +75,8 @@ One static binary, no cgo.
 
 ## Install
 
+`./install.sh --install` builds and installs in one step (needs Go; any Go 1.21 or newer works, it fetches 1.27), and `./install.sh --remove` uninstalls. This is also what ritz-get runs. Or by hand:
+
 ```sh
 ./ccorral install
 ```
