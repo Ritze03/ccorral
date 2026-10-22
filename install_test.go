@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -503,6 +504,134 @@ func TestInstallAlwaysRewritesAndCopies(t *testing.T) {
 		fi, err := os.Stat(p)
 		if err != nil || !fi.ModTime().After(old.Add(time.Minute)) {
 			t.Errorf("%s was not rewritten", p)
+		}
+	}
+}
+
+// neverReader fails the test if anything reads from it.
+type neverReader struct{ t *testing.T }
+
+func (n neverReader) Read([]byte) (int, error) {
+	n.t.Helper()
+	n.t.Error("--yes read from stdin")
+	return 0, io.EOF
+}
+
+func TestInstallYesAnswersEverything(t *testing.T) {
+	f := newInstFixture(t)
+	f.env.assumeYes = true
+	f.write(t, f.env.slicePath(), "[Slice]\nAllowedCPUs=0\n") // hand-written
+	f.write(t, f.env.oldScript(), "old")
+
+	var out strings.Builder
+	code := installRun(f.env, neverReader{t}, &out)
+	if code != 0 {
+		t.Fatalf("code %d\n%s", code, out.String())
+	}
+	if got := readFile(t, f.env.slicePath()); got != wantSliceFor10Cores {
+		t.Errorf("slice not taken over:\n%s", got)
+	}
+	if exists(f.env.oldScript()) {
+		t.Error("old script not removed")
+	}
+	if got := readFile(t, f.env.binPath()); got != "BINARY-V2" {
+		t.Errorf("binary content %q", got)
+	}
+	for _, want := range []string{
+		"Let ccorral take over claude.slice? [y/N] yes (--yes)\n",
+		"(replaced by ccorral)? [y/N] yes (--yes)\n",
+		"Proceed? [y/N] yes (--yes)\n",
+		"This will:\n",
+		"  - copy ",
+		"Wrote " + f.env.binPath(),
+		"Ran systemctl --user start ccorral.service",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestInstallWithoutYesStillAsks(t *testing.T) {
+	f := newInstFixture(t)
+	if code, _ := f.install(t, ""); code != 1 { // EOF on the question: abort
+		t.Errorf("code %d, want 1", code)
+	}
+	if exists(f.env.binPath()) {
+		t.Error("installed without an answer")
+	}
+}
+
+func TestUninstallYes(t *testing.T) {
+	f := newInstFixture(t)
+	if code, out := f.install(t, "y\n"); code != 0 {
+		t.Fatalf("install: %d\n%s", code, out)
+	}
+	f.calls = nil
+	f.env.assumeYes = true
+	var out strings.Builder
+	if code := uninstallRun(f.env, neverReader{t}, &out); code != 0 {
+		t.Fatalf("code %d\n%s", code, out.String())
+	}
+	if exists(f.env.unitPath()) || exists(f.env.binPath()) {
+		t.Error("unit or binary not removed")
+	}
+	want := []string{"disable --now ccorral.service", "daemon-reload"}
+	if got := f.callStrings(); !reflect.DeepEqual(got, want) {
+		t.Errorf("calls %q, want %q", got, want)
+	}
+	if !strings.Contains(out.String(), "Proceed? [y/N] yes (--yes)\n") {
+		t.Errorf("output lacks the logged answer:\n%s", out.String())
+	}
+}
+
+// The installed name is ccorral whatever the source file is called, e.g. the
+// release asset ccorral-linux-x86_64 run from a temp dir.
+func TestInstallDestinationIgnoresSourceName(t *testing.T) {
+	f := newInstFixture(t)
+	f.env.self = filepath.Join(t.TempDir(), "ccorral-linux-x86_64")
+	if err := os.WriteFile(f.env.self, []byte("ASSET"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.env.assumeYes = true
+	var out strings.Builder
+	if code := installRun(f.env, neverReader{t}, &out); code != 0 {
+		t.Fatalf("code %d\n%s", code, out.String())
+	}
+	entries, _ := os.ReadDir(f.env.binDir())
+	if len(entries) != 1 || entries[0].Name() != "ccorral" {
+		t.Errorf("bin dir entries %v, want only ccorral", entries)
+	}
+	if got := readFile(t, filepath.Join(f.env.binDir(), "ccorral")); got != "ASSET" {
+		t.Errorf("binary content %q", got)
+	}
+	// running the installed copy again is still recognised
+	f.env.self = f.env.binPath()
+	out.Reset()
+	if code := installRun(f.env, neverReader{t}, &out); code != 0 {
+		t.Fatalf("code %d\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "you are running the installed copy") {
+		t.Errorf("no same-binary note:\n%s", out.String())
+	}
+}
+
+func TestInstallParseArgs(t *testing.T) {
+	for _, c := range []struct {
+		args    []string
+		yes, ok bool
+	}{
+		{nil, false, true},
+		{[]string{"--yes"}, true, true},
+		{[]string{"-y"}, true, true},
+		{[]string{"--yes", "-y"}, true, true},
+		{[]string{"--no"}, false, false},
+		{[]string{"--yes", "extra"}, false, false},
+		{[]string{"extra"}, false, false},
+	} {
+		yes, ok := installParseArgs(c.args)
+		if yes != c.yes || ok != c.ok {
+			t.Errorf("installParseArgs(%q) = %v, %v; want %v, %v", c.args, yes, ok, c.yes, c.ok)
 		}
 	}
 }

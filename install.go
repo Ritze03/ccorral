@@ -63,6 +63,7 @@ type installEnv struct {
 	sysRoot   string // "/sys" in production
 	self      string // path of the binary to copy (install only)
 	run       installRunner
+	assumeYes bool // --yes: answer yes to every question without reading input
 }
 
 func (e installEnv) binDir() string    { return filepath.Join(e.home, ".local", "bin") }
@@ -97,21 +98,35 @@ func installDefaultEnv(needSelf bool, out io.Writer) (installEnv, bool) {
 	return env, true
 }
 
-// installMain is `ccorral install`. It returns the process exit code.
-func installMain() int {
+// installParseArgs reads the arguments after `install`/`uninstall`: nothing,
+// or --yes / -y. ok is false for anything else.
+func installParseArgs(args []string) (yes, ok bool) {
+	for _, a := range args {
+		if a != "--yes" && a != "-y" {
+			return false, false
+		}
+		yes = true
+	}
+	return yes, true
+}
+
+// installMain is `ccorral install [--yes]`. It returns the process exit code.
+func installMain(yes bool) int {
 	env, ok := installDefaultEnv(true, os.Stdout)
 	if !ok {
 		return 1
 	}
+	env.assumeYes = yes
 	return installRun(env, os.Stdin, os.Stdout)
 }
 
-// uninstallMain is `ccorral uninstall`. It returns the process exit code.
-func uninstallMain() int {
+// uninstallMain is `ccorral uninstall [--yes]`. It returns the process exit code.
+func uninstallMain(yes bool) int {
 	env, ok := installDefaultEnv(false, os.Stdout)
 	if !ok {
 		return 1
 	}
+	env.assumeYes = yes
 	return uninstallRun(env, os.Stdin, os.Stdout)
 }
 
@@ -156,7 +171,7 @@ func installRun(env installEnv, in io.Reader, out io.Writer) int {
 	case installFirstLine(string(cur)) != installSliceMarker:
 		fmt.Fprintf(out, "%s exists and is not managed by ccorral.\n\nCurrent file:\n%s\nccorral would replace it with:\n%s\n",
 			env.slicePath(), installIndent(string(cur)), installIndent(slice))
-		yes, ok := installAsk(r, out, "Let ccorral take over claude.slice? [y/N] ")
+		yes, ok := env.ask(r, out, "Let ccorral take over claude.slice? [y/N] ")
 		if !ok {
 			return abort()
 		}
@@ -173,7 +188,7 @@ func installRun(env installEnv, in io.Reader, out io.Writer) int {
 
 	removeOld := false
 	if _, err := os.Lstat(env.oldScript()); err == nil {
-		yes, ok := installAsk(r, out, fmt.Sprintf("Remove the old script %s (replaced by ccorral)? [y/N] ", env.oldScript()))
+		yes, ok := env.ask(r, out, fmt.Sprintf("Remove the old script %s (replaced by ccorral)? [y/N] ", env.oldScript()))
 		if !ok {
 			return abort()
 		}
@@ -219,7 +234,7 @@ func installRun(env installEnv, in io.Reader, out io.Writer) int {
 	fmt.Fprintln(out, "  - run: systemctl --user daemon-reload")
 	fmt.Fprintf(out, "  - run: systemctl --user enable %s\n", installService)
 	fmt.Fprintf(out, "  - run: systemctl --user start %s\n\n", installService)
-	if yes, ok := installAsk(r, out, "Proceed? [y/N] "); !ok || !yes {
+	if yes, ok := env.ask(r, out, "Proceed? [y/N] "); !ok || !yes {
 		return abort()
 	}
 	fmt.Fprintln(out)
@@ -294,7 +309,7 @@ func uninstallRun(env installEnv, in io.Reader, out io.Writer) int {
 	fmt.Fprintln(out, "  - run: systemctl --user daemon-reload")
 	fmt.Fprintf(out, "  - remove %s\n", env.binPath())
 	fmt.Fprintf(out, "It leaves %s and the ccorral config in place (the claude() shell wrapper depends on the slice).\n\n", env.slicePath())
-	if yes, ok := installAsk(r, out, "Proceed? [y/N] "); !ok || !yes {
+	if yes, ok := env.ask(r, out, "Proceed? [y/N] "); !ok || !yes {
 		fmt.Fprintln(out, "Aborted; nothing was changed.")
 		return 1
 	}
@@ -328,6 +343,16 @@ func uninstallRun(env installEnv, in io.Reader, out io.Writer) int {
 	fmt.Fprintf(out, "\nLeft in place: %s and the ccorral config.\n", env.slicePath())
 	fmt.Fprintln(out, "claude.slice keeps its current CPU limit until reboot; run 'systemctl --user revert claude.slice' to drop it now.")
 	return code
+}
+
+// ask is installAsk, except that with --yes it answers yes without reading:
+// the prompt is still printed, followed by the answer, so the log stays readable.
+func (e installEnv) ask(r *bufio.Reader, out io.Writer, prompt string) (yes, ok bool) {
+	if e.assumeYes {
+		fmt.Fprintln(out, prompt+"yes (--yes)")
+		return true, true
+	}
+	return installAsk(r, out, prompt)
 }
 
 // installAsk prints prompt and reads one answer. yes is true only for y/yes

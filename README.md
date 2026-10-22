@@ -81,7 +81,7 @@ One static binary, no cgo.
 
 Every run is a full reinstall: re-running `./ccorral install` from a fresh build updates everything (stops the service, replaces the binary and unit, starts it again). Running the *installed* `ccorral install` (`~/.local/bin/ccorral`) has no new binary to copy; it warns and only re-applies the same version.
 
-It asks first and writes nothing until you confirm a summary of what will change. Then it:
+It asks first and writes nothing until you confirm a summary of what will change. For scripts and installers there is `ccorral install --yes` (or `-y`): it still prints the summary and each step, but answers yes to every question, including taking over a hand-written `claude.slice` and removing the old `claude-cpus` script, and never reads stdin. The binary is always installed as `~/.local/bin/ccorral`, whatever file name you ran it under. Then it:
 
 - stops the service if it is running, then copies the binary to `~/.local/bin/ccorral` (and tells you if that isn't on your `$PATH`)
 - writes `~/.config/systemd/user/ccorral.service`
@@ -99,7 +99,7 @@ To remove it again:
 ccorral uninstall
 ```
 
-After a confirmation this disables and stops the service, removes `ccorral.service`, and
+After a confirmation (or straight away with `ccorral uninstall --yes`) this disables and stops the service, removes `ccorral.service`, and
 removes `~/.local/bin/ccorral`. The slice file and `~/.config/ccorral/config` stay. The slice
 keeps its CPU limit until reboot; `systemctl --user revert claude.slice` drops it right away.
 
