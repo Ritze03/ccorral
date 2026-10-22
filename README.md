@@ -129,6 +129,20 @@ It replaces itself with the command (via `systemd-run --user --scope`), so stdin
 signals and the exit code behave as if you had run the command directly. If it is already
 inside the slice, it just runs the command, so nesting is harmless. A missing command exits 127.
 
+### Telling agents to use it
+
+Claude Code only uses `ccorral --` if it is told to. Add this to `~/.claude/CLAUDE.md`, which every session loads:
+
+```sh
+cat >> ~/.claude/CLAUDE.md <<'EOF'
+
+## Launching processes
+Launch dev servers, builds, test runs, background jobs and any other long-running or CPU-heavy command with `ccorral -- CMD [ARGS...]`, e.g. `ccorral -- npm run dev`. This keeps the command inside claude.slice; if it's already in the slice, ccorral just runs it. Don't use `systemd-run`, `setsid` or `nohup` on their own to start these. Run `ccorral help` for details.
+EOF
+```
+
+Sessions that are already running pick it up after a restart.
+
 ## Instant placement (optional)
 
 Without this, a new Claude session is moved into the slice by the next sweep, within one sweep interval (5 s by default, `interval=` 500–10000 ms). To
