@@ -23,8 +23,8 @@ usage:
   ccorral settings              terminal UI: cores per mode, sweep interval
   ccorral -- CMD [ARGS...]      run CMD inside claude.slice (alias: ccorral run CMD)
   ccorral daemon                run the daemon (systemd user unit ccorral.service)
-  ccorral install [--yes]       install the binary and the systemd user unit
-  ccorral uninstall [--yes]     remove them again (--yes: no questions)`
+
+install and remove with ./install.sh (or: ritz-get install ccorral)`
 
 const ipcShutdownGrace = 3 * time.Second
 
@@ -62,16 +62,6 @@ func main() {
 		os.Exit(runMain(args))
 	case "daemon":
 		os.Exit(runDaemon())
-	case "install", "uninstall":
-		yes, ok := installParseArgs(os.Args[2:])
-		if !ok {
-			fmt.Println(usage)
-			os.Exit(2)
-		}
-		if cmd == "install" {
-			os.Exit(installMain(yes))
-		}
-		os.Exit(uninstallMain(yes))
 	default:
 		fmt.Println(usage)
 		os.Exit(2)
@@ -86,12 +76,14 @@ func runDaemon() int {
 	defer stop()
 
 	b := newSliceBackend()
-
 	// The listen is the single-instance guard: fail before touching anything.
 	ln, err := ipcListen(SocketPath())
 	if err != nil {
 		log.Printf("ccorral: %v", err)
 		return 1
+	}
+	if err := sliceEnsureFile(configDir(), b.sysRoot, b.run); err != nil {
+		log.Printf("ccorral: %v", err)
 	}
 	ipcDone := make(chan struct{})
 	var ipcErr error // written before ipcDone closes
