@@ -51,16 +51,14 @@ const ipcUsage = "usage:\n  ccorral status\n  ccorral green|yellow|red\n  ccorra
 const ipcNotRunning = "ccorral daemon not running — start it with `systemctl --user start ccorral`"
 
 // ipcNotInstalled is printed instead when the systemd unit file is absent.
-const ipcNotInstalled = "ccorral is not installed — run 'ccorral install' first"
+const ipcNotInstalled = "ccorral is not installed — run `ritz-get install ccorral` (or ./install.sh --install in the clone) first"
+
+// ipcService is the systemd user unit that runs the daemon.
+const ipcService = "ccorral.service"
 
 // ipcNotRunningMsg picks the hint: install first if the unit file is missing.
 func ipcNotRunningMsg() string {
-	dir := os.Getenv("XDG_CONFIG_HOME")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".config")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "systemd", "user", installService)); err != nil {
+	if _, err := os.Stat(filepath.Join(configDir(), "systemd", "user", ipcService)); err != nil {
 		return ipcNotInstalled
 	}
 	return ipcNotRunning

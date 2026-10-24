@@ -15,7 +15,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -181,4 +183,60 @@ func (b *sliceBackend) Reload() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.apply(configLoad(b.path, b.sysRoot))
+}
+
+// sliceFileTemplate is the claude.slice written when none exists; %s is the
+// yellow cpulist. It is user config: ccorral never rewrites or removes it.
+const sliceFileTemplate = `# Created by ccorral on first start; yours to edit, ccorral never rewrites it.
+[Unit]
+Description=Claude Code and everything it spawns (created by ccorral)
+
+[Slice]
+AllowedCPUs=%s
+`
+
+// configDir is $XDG_CONFIG_HOME, or ~/.config.
+func configDir() string {
+	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
+		return dir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config")
+}
+
+// sliceEnsureFile writes <cfgDir>/systemd/user/claude.slice, limited to the
+// yellow cores, if no such file exists, and asks the user manager to reload.
+// An existing file (or a dangling symlink) is never touched. The daemon's
+// runtime properties apply on top of it either way.
+func sliceEnsureFile(cfgDir, sysRoot string, run sliceRunner) error {
+	path := filepath.Join(cfgDir, "systemd", "user", sweepSlice)
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	}
+	cores, err := cpuCores(sysRoot)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	yellow, _ := cpuDefaults(cores)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	// O_EXCL: if something appeared meanwhile, leave it alone.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	_, werr := fmt.Fprintf(f, sliceFileTemplate, cpuFormat(yellow))
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		os.Remove(path)
+		return fmt.Errorf("creating %s: %w", path, werr)
+	}
+	log.Printf("ccorral: created %s", path)
+	return run("--user", "daemon-reload")
 }

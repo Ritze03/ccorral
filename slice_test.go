@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -351,5 +353,42 @@ func TestSliceThemeReload(t *testing.T) {
 	}
 	if got := b.Snapshot().Theme; got != themeLight {
 		t.Errorf("theme after reload = %q", got)
+	}
+}
+
+func TestSliceEnsureFile(t *testing.T) {
+	cfg := t.TempDir()
+	sys := fakeSys(t, smt10())
+	var calls [][]string
+	run := func(args ...string) error { calls = append(calls, args); return nil }
+	path := filepath.Join(cfg, "systemd", "user", "claude.slice")
+
+	if err := sliceEnsureFile(cfg, sys, run); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "[Slice]\nAllowedCPUs=3-9,13-19\n") {
+		t.Errorf("slice file:\n%s", got)
+	}
+	if !reflect.DeepEqual(calls, [][]string{{"--user", "daemon-reload"}}) {
+		t.Errorf("calls = %v", calls)
+	}
+
+	// An existing file (here hand-written) is left alone and no reload runs.
+	if err := os.WriteFile(path, []byte("[Slice]\nAllowedCPUs=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls = nil
+	if err := sliceEnsureFile(cfg, sys, run); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "[Slice]\nAllowedCPUs=1\n" {
+		t.Errorf("existing slice was rewritten:\n%s", b)
+	}
+	if len(calls) != 0 {
+		t.Errorf("calls = %v, want none", calls)
 	}
 }
