@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1E2129"/>
+      <stop offset="1" stop-color="#14161B"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="256" cy="256" r="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFD000" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#FFD000" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="disc">
+      <circle cx="256" cy="256" r="112.32"/>
+    </clipPath>
+  </defs>
+  <rect x="32" y="32" width="448" height="448" rx="104" fill="url(#tile)"/>
+  <rect x="34" y="34" width="444" height="444" rx="102" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="4"/>
+  <circle cx="256" cy="256" r="190" fill="url(#glow)"/>
+  <!-- tray gauge (tray.go): outer r 0.47, inner r 0.39, stroke 0.08 of the 288 box; level at 2/3 area -->
+  <g clip-path="url(#disc)">
+    <rect x="100" y="226.24" width="312" height="150" fill="#FFD000"/>
+    <rect x="100" y="203.2" width="312" height="23.04" fill="#FFFFFF"/>
+  </g>
+  <circle cx="256" cy="256" r="123.84" fill="none" stroke="#FFFFFF" stroke-width="23.04"/>
+</svg>
