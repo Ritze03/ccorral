@@ -56,8 +56,11 @@ EOT
 	if [ -n "$first" ] || [ -L "$unit" ]; then link "$dir/build/$NAME.service" "$unit"; fi
 	if has_manager; then
 		if [ -n "$first" ]; then
+			# an older copy-based install may already be running its old binary: restart it too
+			was=; ! systemctl --user is-active --quiet "$NAME.service" 2>/dev/null || was=1
 			systemctl --user daemon-reload && systemctl --user enable --now "$NAME.service" \
 				|| echo "restart: the service did not start; run: systemctl --user enable --now $NAME.service"
+			[ -z "$was" ] || systemctl --user try-restart "$NAME.service" || true
 		elif [ -L "$unit" ]; then
 			systemctl --user daemon-reload || true
 			# an update restarts the service only if the user has not disabled it
@@ -65,6 +68,8 @@ EOT
 				systemctl --user try-restart "$NAME.service" \
 					|| echo "restart: run: systemctl --user restart $NAME.service"
 			fi
+		else
+			echo "note: the service is disabled; to enable it: systemctl --user enable --now $dir/build/$NAME.service"
 		fi
 	elif [ -n "$first" ]; then echo "restart: no systemd user session; later run: systemctl --user enable --now $NAME.service"
 	else echo "restart: systemctl --user restart $NAME.service to use the new version"; fi
