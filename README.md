@@ -75,34 +75,25 @@ One static binary, no cgo.
 
 ## Install
 
-`./install.sh --install` builds and installs in one step (needs Go; any Go 1.21 or newer works, it fetches 1.27), and `./install.sh --remove` uninstalls. This is also what ritz-get runs. Or by hand:
+`ritz-get install ccorral` is the main way. Without ritz-get, `./install.sh --install` builds and installs in one step (needs Go; any Go 1.21 or newer works, it fetches 1.27), and `./install.sh --remove` uninstalls. This is also what ritz-get runs. Both are safe to re-run: running `./install.sh --install` again rebuilds and updates everything.
 
-```sh
-./ccorral install
-```
+`install.sh` only builds and links, it copies nothing out of the clone. It:
 
-Every run is a full reinstall: re-running `./ccorral install` from a fresh build updates everything (stops the service, replaces the binary and unit, starts it again). Running the *installed* `ccorral install` (`~/.local/bin/ccorral`) has no new binary to copy; it warns and only re-applies the same version.
+- builds `build/ccorral` and links it as `~/.local/bin/ccorral` (and tells you if that isn't on your `$PATH`)
+- generates `build/ccorral.service` and links it into `~/.config/systemd/user/`
+- on the first install, runs `systemctl --user daemon-reload` and `enable --now ccorral.service`; on an update it restarts the service, unless you disabled it (a disabled service stays disabled)
 
-It asks first and writes nothing until you confirm a summary of what will change. For scripts and installers there is `ccorral install --yes` (or `-y`): it still prints the summary and each step, but answers yes to every question, including taking over a hand-written `claude.slice` and removing the old `claude-cpus` script, and never reads stdin. The binary is always installed as `~/.local/bin/ccorral`, whatever file name you ran it under. Then it:
+Without a reachable systemd user session it still succeeds and prints a `restart:` line. There is no `ccorral install` subcommand.
 
-- stops the service if it is running, then copies the binary to `~/.local/bin/ccorral` (and tells you if that isn't on your `$PATH`)
-- writes `~/.config/systemd/user/ccorral.service`
-- writes `~/.config/systemd/user/claude.slice` with `AllowedCPUs=` set to the yellow group.
-  The file starts with a marker line; ccorral rewrites a slice carrying it freely, but if you
-  already have a hand-written `claude.slice` it shows it next to the replacement and asks
-  before taking it over (decline and it is left alone)
-- offers to remove an old `~/.local/bin/claude-cpus` script, if there is one
-- runs `systemctl --user daemon-reload` and `enable --now ccorral.service` (restarting it if
-  it was already running)
+`claude.slice` is not installed by the script. The daemon creates `~/.config/systemd/user/claude.slice` (with `AllowedCPUs=` set to the yellow group) when it is missing, and never rewrites or removes it.
 
 To remove it again:
 
 ```sh
-ccorral uninstall
+ritz-get remove ccorral    # or: ./install.sh --remove
 ```
 
-After a confirmation (or straight away with `ccorral uninstall --yes`) this disables and stops the service, removes `ccorral.service`, and
-removes `~/.local/bin/ccorral`. The slice file and `~/.config/ccorral/config` stay. The slice
+This disables and stops the service and removes the links (`ccorral.service`, `~/.local/bin/ccorral`). The slice file and `~/.config/ccorral/config` stay. The slice
 keeps its CPU limit until reboot; `systemctl --user revert claude.slice` drops it right away.
 
 ## Usage
@@ -207,5 +198,5 @@ done here, use the tray or `ccorral green|yellow|red`.
 ## Layout
 
 A flat `package main` at the repo root, one file per area: `cpus.go`, `config.go`,
-`sweep.go`, `slice.go`, `ipc.go`, `tray.go`, `settings.go`, `run.go`, `install.go` and `main.go`. Tests sit next to them
+`sweep.go`, `slice.go`, `ipc.go`, `tray.go`, `settings.go`, `run.go` and `main.go`. Tests sit next to them
 (`go test ./...`).

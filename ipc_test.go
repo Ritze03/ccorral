@@ -294,7 +294,7 @@ func TestDaemonNotRunning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "absent.sock")
 
 	code, out := run(t, path, "status")
-	if code != 1 || !strings.Contains(out, "ccorral install") {
+	if code != 1 || !strings.Contains(out, "install.sh --install") {
 		t.Errorf("unit absent: exit %d output %q, want 1 and install hint", code, out)
 	}
 
@@ -302,7 +302,7 @@ func TestDaemonNotRunning(t *testing.T) {
 	if err := os.MkdirAll(unitDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(unitDir, installService), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(unitDir, ipcService), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	code, out = run(t, path, "status")
