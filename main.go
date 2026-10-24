@@ -76,15 +76,14 @@ func runDaemon() int {
 	defer stop()
 
 	b := newSliceBackend()
-	if err := sliceEnsureFile(configDir(), b.sysRoot, b.run); err != nil {
-		log.Printf("ccorral: %v", err)
-	}
-
 	// The listen is the single-instance guard: fail before touching anything.
 	ln, err := ipcListen(SocketPath())
 	if err != nil {
 		log.Printf("ccorral: %v", err)
 		return 1
+	}
+	if err := sliceEnsureFile(configDir(), b.sysRoot, b.run); err != nil {
+		log.Printf("ccorral: %v", err)
 	}
 	ipcDone := make(chan struct{})
 	var ipcErr error // written before ipcDone closes
