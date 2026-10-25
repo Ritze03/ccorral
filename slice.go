@@ -10,6 +10,11 @@ package main
 // the saved mode at start. Green sets the explicit list of all CPUs: an empty
 // AllowedCPUs= drops the cpuset controller and leaves running processes on
 // their old, narrowed mask.
+//
+// The rest of the desktop gets the remaining cores: AllowedCPUs (only that) on
+// app.slice, session.slice and background.slice is set to all CPUs minus the
+// mode's group, so Claude and the desktop never share cores. Green shares all.
+// Stopping the daemon leaves it as is; only uninstall widens it again.
 
 import (
 	"context"
@@ -49,6 +54,77 @@ func sliceArgs(cpus []int, cfg Config) []string {
 		"CPUWeight=" + cfg.CPUWeight, "IOWeight=" + cfg.IOWeight, "MemoryHigh=" + cfg.MemoryHigh}
 }
 
+// outsideSlice is the desktop side where `ccorral outside` starts commands;
+// outsideSlices are the user manager's top-level slices that get the cores
+// Claude does not.
+const outsideSlice = "app.slice"
+
+var outsideSlices = []string{outsideSlice, "session.slice", "background.slice"}
+
+// outsideArgs is the systemctl argv that sets slice's AllowedCPUs to cpus and
+// nothing else. systemctl set-property takes one unit.
+func outsideArgs(slice string, cpus []int) []string {
+	return []string{"--user", "set-property", "--runtime", slice, "AllowedCPUs=" + cpuFormat(cpus)}
+}
+
+// outsideCPUs is what the desktop gets: all minus group, or all when that would
+// be empty (green, or a hand-set group covering every CPU) - never an empty list.
+func outsideCPUs(all, group []int, mode string) []int {
+	if mode == modeGreen {
+		return all
+	}
+	in := map[int]bool{}
+	for _, c := range group {
+		in[c] = true
+	}
+	var out []int
+	for _, c := range all {
+		if !in[c] {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		log.Printf("ccorral: %s covers every CPU: the desktop shares them", mode)
+		return all
+	}
+	return out
+}
+
+// applyOutside sets cpus on every outside slice. All are tried; it returns the
+// ones that failed. An empty list is never sent.
+func (b *sliceBackend) applyOutside(cpus []int) (failed []string) {
+	if len(cpus) == 0 {
+		return nil
+	}
+	for _, sl := range outsideSlices {
+		if err := b.run(outsideArgs(sl, cpus)...); err != nil {
+			log.Printf("ccorral: %s: %v", sl, err)
+			failed = append(failed, sl)
+		}
+	}
+	return failed
+}
+
+// sliceRelease widens the outside slices back to all CPUs (what uninstall
+// does) and returns that list. It avoids `systemctl revert`, which would also
+// drop the user's own drop-ins for these slices.
+func sliceRelease(sysRoot string, run sliceRunner) (string, error) {
+	cores, err := cpuCores(sysRoot)
+	if err != nil {
+		return "", err
+	}
+	var all []int
+	for _, c := range cores {
+		all = append(all, c...)
+	}
+	sort.Ints(all)
+	b := &sliceBackend{run: run}
+	if failed := b.applyOutside(all); len(failed) > 0 {
+		return cpuFormat(all), fmt.Errorf("could not widen %s", strings.Join(failed, ", "))
+	}
+	return cpuFormat(all), nil
+}
+
 // sliceBackend is the daemon's state: the config file, the sysfs root and what
 // was last applied to the slice.
 type sliceBackend struct {
@@ -67,16 +143,17 @@ type sliceBackend struct {
 
 // sliceSnapshot is what the tray shows: the live mode and each mode's cores.
 type sliceSnapshot struct {
-	Mode  string            // "green" | "yellow" | "red" ("" before first successful apply)
-	Cores map[string]string // "green","yellow","red" -> cpulist, e.g. "3-9,13-19"
-	Theme string            // themeLight | themeDark ("" before first successful apply)
+	Mode    string            // "green" | "yellow" | "red" ("" before first successful apply)
+	Cores   map[string]string // "green","yellow","red" -> cpulist, e.g. "3-9,13-19"
+	Desktop string            // cores the other slices got, e.g. "0-2,10-12"; "" if unknown or an outside call failed
+	Theme   string            // themeLight | themeDark ("" before first successful apply)
 }
 
 // Snapshot is a copy of the state after the last successful apply.
 func (b *sliceBackend) Snapshot() sliceSnapshot {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	s := sliceSnapshot{Mode: b.snap.Mode, Theme: b.snap.Theme, Cores: map[string]string{}}
+	s := sliceSnapshot{Mode: b.snap.Mode, Theme: b.snap.Theme, Desktop: b.snap.Desktop, Cores: map[string]string{}}
 	for k, v := range b.snap.Cores {
 		s.Cores[k] = v
 	}
@@ -146,13 +223,27 @@ func (b *sliceBackend) apply(cfg Config, err error) error {
 	if err := b.run(sliceArgs(group, cfg)...); err != nil {
 		return err
 	}
-	b.applied = cfg.Mode + " " + cpuFormat(group) + " cpu=" + cfg.CPUWeight + " io=" + cfg.IOWeight + " mem=" + cfg.MemoryHigh
-	b.snap = sliceSnapshot{Mode: cfg.Mode, Theme: cfg.Theme, Cores: map[string]string{
+	// claude.slice is applied. Now the desktop gets the rest; a failure there is
+	// reported but does not undo it.
+	var outside []int // empty only without a topology: then the desktop is left alone
+	if len(all) > 0 {
+		outside = outsideCPUs(all, group, cfg.Mode)
+	}
+	failed := b.applyOutside(outside)
+	desktop, desktopStatus := cpuFormat(outside), "desktop="+cpuFormat(outside)
+	if len(failed) > 0 {
+		desktop, desktopStatus = "", "desktop=failed("+strings.Join(failed, ",")+")"
+	}
+	b.applied = cfg.Mode + " " + cpuFormat(group) + " " + desktopStatus + " cpu=" + cfg.CPUWeight + " io=" + cfg.IOWeight + " mem=" + cfg.MemoryHigh
+	b.snap = sliceSnapshot{Mode: cfg.Mode, Theme: cfg.Theme, Desktop: desktop, Cores: map[string]string{
 		modeGreen: cpuFormat(all), modeYellow: cpuFormat(cfg.Yellow), modeRed: cpuFormat(cfg.Red),
 	}}
 	select {
 	case b.chanLocked() <- struct{}{}:
 	default:
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("claude.slice applied, but not %s", strings.Join(failed, ", "))
 	}
 	return nil
 }

@@ -35,6 +35,20 @@ func wantArgsW(cpulist, cpu, io, mem string) []string {
 		"CPUWeight=" + cpu, "IOWeight=" + io, "MemoryHigh=" + mem}
 }
 
+// wantOutside is the three desktop calls: AllowedCPUs only, one per slice.
+func wantOutside(cpulist string) [][]string {
+	var out [][]string
+	for _, sl := range []string{"app.slice", "session.slice", "background.slice"} {
+		out = append(out, []string{"--user", "set-property", "--runtime", sl, "AllowedCPUs=" + cpulist})
+	}
+	return out
+}
+
+// wantCalls is the claude.slice call followed by the three desktop calls.
+func wantCalls(claude [][]string, outside string) [][]string {
+	return append(append([][]string{}, claude...), wantOutside(outside)...)
+}
+
 func TestSliceArgs(t *testing.T) {
 	def := Config{CPUWeight: "idle", IOWeight: "10", MemoryHigh: "75%"}
 	if got := sliceArgs([]int{3, 4, 5, 13, 14, 15}, def); !reflect.DeepEqual(got, wantArgs("3-5,13-15")) {
@@ -48,12 +62,13 @@ func TestSliceArgs(t *testing.T) {
 
 func TestSliceModes(t *testing.T) {
 	// 10 cores: yellow is the top 7 cores (3-9,13-19), red the top 3 (7-9,17-19).
+	// The desktop gets the complement; green shares all CPUs.
 	tests := []struct {
-		mode, cpulist, status string
+		mode, cpulist, outside, status string
 	}{
-		{modeYellow, "3-9,13-19", "yellow 3-9,13-19 cpu=idle io=10 mem=75%"},
-		{modeRed, "7-9,17-19", "red 7-9,17-19 cpu=idle io=10 mem=75%"},
-		{modeGreen, "0-19", "green 0-19 cpu=idle io=10 mem=75%"},
+		{modeYellow, "3-9,13-19", "0-2,10-12", "yellow 3-9,13-19 desktop=0-2,10-12 cpu=idle io=10 mem=75%"},
+		{modeRed, "7-9,17-19", "0-6,10-16", "red 7-9,17-19 desktop=0-6,10-16 cpu=idle io=10 mem=75%"},
+		{modeGreen, "0-19", "0-19", "green 0-19 desktop=0-19 cpu=idle io=10 mem=75%"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.mode, func(t *testing.T) {
@@ -61,7 +76,7 @@ func TestSliceModes(t *testing.T) {
 			if err := b.SetMode(tt.mode); err != nil {
 				t.Fatal(err)
 			}
-			if want := [][]string{wantArgs(tt.cpulist)}; !reflect.DeepEqual(*calls, want) {
+			if want := wantCalls([][]string{wantArgs(tt.cpulist)}, tt.outside); !reflect.DeepEqual(*calls, want) {
 				t.Errorf("argv = %v, want %v", *calls, want)
 			}
 			if got := b.Status(); got != tt.status {
@@ -76,8 +91,8 @@ func TestSliceModes(t *testing.T) {
 
 // The weights and memory limit from the config go out in every mode, green included.
 func TestSliceLimits(t *testing.T) {
-	for _, tt := range []struct{ mode, cpulist string }{
-		{modeGreen, "0-19"}, {modeYellow, "3-9,13-19"}, {modeRed, "7-9,17-19"},
+	for _, tt := range []struct{ mode, cpulist, outside string }{
+		{modeGreen, "0-19", "0-19"}, {modeYellow, "3-9,13-19", "0-2,10-12"}, {modeRed, "7-9,17-19", "0-6,10-16"},
 	} {
 		t.Run(tt.mode, func(t *testing.T) {
 			b, calls := newTestSlice(t)
@@ -85,10 +100,10 @@ func TestSliceLimits(t *testing.T) {
 			if err := b.SetMode(tt.mode); err != nil {
 				t.Fatal(err)
 			}
-			if want := [][]string{wantArgsW(tt.cpulist, "50", "500", "16G")}; !reflect.DeepEqual(*calls, want) {
+			if want := wantCalls([][]string{wantArgsW(tt.cpulist, "50", "500", "16G")}, tt.outside); !reflect.DeepEqual(*calls, want) {
 				t.Errorf("argv = %v, want %v", *calls, want)
 			}
-			if got, want := b.Status(), tt.mode+" "+tt.cpulist+" cpu=50 io=500 mem=16G"; got != want {
+			if got, want := b.Status(), tt.mode+" "+tt.cpulist+" desktop="+tt.outside+" cpu=50 io=500 mem=16G"; got != want {
 				t.Errorf("Status = %q, want %q", got, want)
 			}
 			// Changed limits are picked up by Reload.
@@ -100,7 +115,7 @@ func TestSliceLimits(t *testing.T) {
 			if err := b.Reload(); err != nil {
 				t.Fatal(err)
 			}
-			if got := (*calls)[1]; !reflect.DeepEqual(got, wantArgs(tt.cpulist)) {
+			if got := (*calls)[4]; !reflect.DeepEqual(got, wantArgs(tt.cpulist)) {
 				t.Errorf("after reload argv = %v", got)
 			}
 		})
@@ -116,7 +131,7 @@ func TestSliceStart(t *testing.T) {
 	if err := b.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if want := [][]string{wantArgs("7-9,17-19")}; !reflect.DeepEqual(*calls, want) {
+	if want := wantCalls([][]string{wantArgs("7-9,17-19")}, "0-6,10-16"); !reflect.DeepEqual(*calls, want) {
 		t.Errorf("argv = %v, want %v", *calls, want)
 	}
 }
@@ -132,11 +147,11 @@ func TestSliceReload(t *testing.T) {
 	if err := b.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{wantArgs("3-9,13-19"), wantArgs("1-2,11-12")}
+	want := append(wantCalls([][]string{wantArgs("3-9,13-19")}, "0-2,10-12"), wantCalls([][]string{wantArgs("1-2,11-12")}, "0,3-10,13-19")...)
 	if !reflect.DeepEqual(*calls, want) {
 		t.Errorf("argv = %v, want %v", *calls, want)
 	}
-	if got := b.Status(); got != "yellow 1-2,11-12 cpu=idle io=10 mem=75%" {
+	if got := b.Status(); got != "yellow 1-2,11-12 desktop=0,3-10,13-19 cpu=idle io=10 mem=75%" {
 		t.Errorf("Status = %q", got)
 	}
 }
@@ -158,7 +173,7 @@ func TestSliceRunnerError(t *testing.T) {
 	if got := readCfg(t, b.path); got != "mode=red\n" {
 		t.Errorf("config = %q", got)
 	}
-	if got := b.Status(); got != "yellow 3-9,13-19 cpu=idle io=10 mem=75%" {
+	if got := b.Status(); got != "yellow 3-9,13-19 desktop=0-2,10-12 cpu=idle io=10 mem=75%" {
 		t.Errorf("Status = %q, want the last applied", got)
 	}
 }
@@ -225,7 +240,7 @@ func TestSliceSnapshot(t *testing.T) {
 	if err := b.SetMode(modeRed); err != nil {
 		t.Fatal(err)
 	}
-	want := sliceSnapshot{Mode: modeRed, Theme: themeDark, Cores: map[string]string{
+	want := sliceSnapshot{Mode: modeRed, Theme: themeDark, Desktop: "0-6,10-16", Cores: map[string]string{
 		"green": "0-19", "yellow": "3-9,13-19", "red": "7-9,17-19",
 	}}
 	got := b.Snapshot()
@@ -390,5 +405,106 @@ func TestSliceEnsureFile(t *testing.T) {
 	}
 	if len(calls) != 0 {
 		t.Errorf("calls = %v, want none", calls)
+	}
+}
+
+// A hand-set non-green group that covers every CPU leaves nothing for the
+// desktop: it gets all CPUs instead of an empty list.
+func TestSliceOutsideEmptyComplement(t *testing.T) {
+	b, calls := newTestSlice(t)
+	writeCfg(t, b.path, "mode=yellow\nyellow=0-19\n")
+	if err := b.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if want := wantCalls([][]string{wantArgs("0-19")}, "0-19"); !reflect.DeepEqual(*calls, want) {
+		t.Errorf("argv = %v, want %v", *calls, want)
+	}
+	for _, c := range *calls {
+		if strings.HasSuffix(c[len(c)-1], "AllowedCPUs=") {
+			t.Errorf("empty AllowedCPUs sent: %v", c)
+		}
+	}
+	if got := b.Status(); got != "yellow 0-19 desktop=0-19 cpu=idle io=10 mem=75%" {
+		t.Errorf("Status = %q", got)
+	}
+}
+
+// One outside slice failing does not stop the others, the error names it,
+// claude.slice stays applied and the desktop is reported as failed.
+func TestSliceOutsideFailure(t *testing.T) {
+	b, calls := newTestSlice(t)
+	b.run = func(args ...string) error {
+		*calls = append(*calls, args)
+		if len(args) > 3 && args[3] == "session.slice" {
+			return errors.New("boom")
+		}
+		return nil
+	}
+	ch := b.Changed()
+	err := b.SetMode(modeYellow)
+	if err == nil || !strings.Contains(err.Error(), "session.slice") ||
+		strings.Contains(err.Error(), "app.slice") || strings.Contains(err.Error(), "background.slice") {
+		t.Fatalf("SetMode err = %v, want one naming only session.slice", err)
+	}
+	if want := wantCalls([][]string{wantArgs("3-9,13-19")}, "0-2,10-12"); !reflect.DeepEqual(*calls, want) {
+		t.Errorf("argv = %v, want %v", *calls, want)
+	}
+	if got := b.Status(); got != "yellow 3-9,13-19 desktop=failed(session.slice) cpu=idle io=10 mem=75%" {
+		t.Errorf("Status = %q", got)
+	}
+	if s := b.Snapshot(); s.Mode != modeYellow || s.Desktop != "" {
+		t.Errorf("Snapshot = %+v, want yellow without desktop", s)
+	}
+	select {
+	case <-ch:
+	default:
+		t.Error("claude.slice applied but no Changed signal")
+	}
+}
+
+// If claude.slice itself fails, the desktop is not touched.
+func TestSliceClaudeFailureSkipsOutside(t *testing.T) {
+	b, calls := newTestSlice(t)
+	b.run = func(args ...string) error {
+		*calls = append(*calls, args)
+		return errors.New("boom")
+	}
+	if err := b.SetMode(modeYellow); err == nil {
+		t.Fatal("SetMode succeeded")
+	}
+	if len(*calls) != 1 {
+		t.Errorf("calls = %v, want only the claude.slice call", *calls)
+	}
+}
+
+// Uninstall: every outside slice back to all CPUs, nothing else, no revert.
+func TestSliceRelease(t *testing.T) {
+	var calls [][]string
+	all, err := sliceRelease(fakeSys(t, smt10()), func(args ...string) error {
+		calls = append(calls, args)
+		return nil
+	})
+	if err != nil || all != "0-19" {
+		t.Fatalf("sliceRelease = %q, %v", all, err)
+	}
+	if want := wantOutside("0-19"); !reflect.DeepEqual(calls, want) {
+		t.Errorf("calls = %v, want %v", calls, want)
+	}
+	// A failure keeps going and names the slice.
+	calls = nil
+	_, err = sliceRelease(fakeSys(t, smt10()), func(args ...string) error {
+		calls = append(calls, args)
+		if args[3] == "app.slice" {
+			return errors.New("boom")
+		}
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "app.slice") || len(calls) != 3 {
+		t.Errorf("err = %v, calls = %v", err, calls)
+	}
+	// No topology: nothing is sent.
+	calls = nil
+	if _, err := sliceRelease(t.TempDir(), func(args ...string) error { calls = append(calls, args); return nil }); err == nil || len(calls) != 0 {
+		t.Errorf("no topology: err = %v, calls = %v", err, calls)
 	}
 }

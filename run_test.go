@@ -29,7 +29,7 @@ func TestRunArgv(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			orig := append([]string(nil), tc.args...)
-			got := runArgv(tc.inside, "/usr/bin/systemd-run", "ccorral-run-test", tc.cmd, tc.args)
+			got := runArgv(tc.inside, "claude.slice", "/usr/bin/systemd-run", "ccorral-run-test", tc.cmd, tc.args)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("runArgv = %q, want %q", got, tc.want)
 			}
@@ -37,6 +37,26 @@ func TestRunArgv(t *testing.T) {
 				t.Errorf("args mutated: %q", tc.args)
 			}
 		})
+	}
+}
+
+// `ccorral outside` always goes through systemd-run into app.slice, with the
+// same $ escaping.
+func TestRunArgvOutsideSlice(t *testing.T) {
+	got := runArgv(false, outsideSlice, "/usr/bin/systemd-run", "ccorral-run-test", "sh", []string{"-c", "echo ${HOME} $$"})
+	want := []string{"/usr/bin/systemd-run", "--user", "--scope", "--slice=app.slice", "--unit=ccorral-run-test", "--collect", "-q", "--",
+		"sh", "-c", "echo $${HOME} $$$$"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("runArgv = %q, want %q", got, want)
+	}
+}
+
+func TestOutsideMain(t *testing.T) {
+	if got := outsideMain(nil); got != 2 {
+		t.Errorf("outsideMain(nil) = %d, want 2", got)
+	}
+	if got := outsideMain([]string{"ccorral-no-such-command-xyz"}); got != 127 {
+		t.Errorf("outsideMain(missing) = %d, want 127", got)
 	}
 }
 

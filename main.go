@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -22,6 +23,9 @@ usage:
   ccorral reload                re-read the config and re-apply it
   ccorral settings              terminal UI: cores per mode, sweep interval
   ccorral -- CMD [ARGS...]      run CMD inside claude.slice (alias: ccorral run CMD)
+  ccorral outside [--] CMD [ARGS...]
+                                run CMD in app.slice, the desktop side (e.g. a game)
+  ccorral release               widen the desktop slices back to all CPUs (uninstall runs this)
   ccorral daemon                run the daemon (systemd user unit ccorral.service)
 
 install and remove with ./install.sh (or: ritz-get install ccorral)`
@@ -60,12 +64,36 @@ func main() {
 			args = args[1:]
 		}
 		os.Exit(runMain(args))
+	case "outside":
+		args := os.Args[2:]
+		if len(args) > 0 && args[0] == "--" {
+			args = args[1:]
+		}
+		os.Exit(outsideMain(args))
+	case "release":
+		if len(os.Args) > 2 {
+			fmt.Println(usage)
+			os.Exit(2)
+		}
+		os.Exit(releaseMain())
 	case "daemon":
 		os.Exit(runDaemon())
 	default:
 		fmt.Println(usage)
 		os.Exit(2)
 	}
+}
+
+// releaseMain widens app.slice, session.slice and background.slice back to all
+// CPUs, for uninstall. The mode does not do this itself when the daemon stops.
+func releaseMain() int {
+	all, err := sliceRelease("/sys", sliceSystemctl)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ccorral: %v\n", err)
+		return 1
+	}
+	fmt.Printf("widened %s to CPUs %s\n", strings.Join(outsideSlices, ", "), all)
+	return 0
 }
 
 // runDaemon serves the IPC socket, applies the saved mode and sweeps until

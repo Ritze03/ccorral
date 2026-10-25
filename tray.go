@@ -376,7 +376,15 @@ func trayModeText(s sliceSnapshot) string {
 	return trayModeName(s.Mode) + ": " + cores
 }
 
-func trayTitle(s sliceSnapshot) string { return "ccorral — " + trayModeText(s) }
+// trayTitle adds the desktop cores (not in green, where they are shared):
+// "ccorral — Yellow: 3-9,13-19 · desktop 0-2,10-12".
+func trayTitle(s sliceSnapshot) string {
+	t := "ccorral — " + trayModeText(s)
+	if s.Mode != "" && s.Mode != "green" && s.Desktop != "" {
+		t += " · desktop " + s.Desktop
+	}
+	return t
+}
 
 func trayTooltipFor(s sliceSnapshot) trayTooltip {
 	// Freshly built on every call, and it must stay that way: prop stores the

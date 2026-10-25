@@ -1,26 +1,36 @@
 # ccorral
 
-Pins Claude Code CLI sessions, and everything they spawn (builds, tests, MCP servers), to a
-chosen set of CPU cores, with a low CPU and I/O weight and a soft memory limit, so the rest of
-the desktop stays responsive. Linux only.
+Splits the CPU two ways. Claude Code CLI sessions, and everything they spawn (builds, tests,
+MCP servers), are pinned to a chosen set of cores, with a low CPU and I/O weight and a soft
+memory limit. The rest of your desktop gets the remaining cores, so the two never share cores
+and the desktop stays responsive. Linux only.
 
 It works through `AllowedCPUs`, `CPUWeight`, `IOWeight` and `MemoryHigh` on the systemd user
-slice `claude.slice`, so a change applies live to running sessions and their children. A daemon sweeps every 5 s by default (`interval=`, 500 to 10000 ms) and moves Claude
+slice `claude.slice`, so a change applies live to running sessions and their children. The
+other side is `AllowedCPUs` alone on the user manager's `app.slice`, `session.slice` and
+`background.slice` (your applications, your login session and background services), set to the
+cores Claude does not have. A daemon sweeps every 5 s by default (`interval=`, 500 to 10000 ms) and moves Claude
 sessions that were started outside the slice (tmux, other terminals, anything that doesn't use
 the wrapper below) into it. Claude is recognised by its executable under
 `~/.local/share/claude/versions/`.
 
 ## Modes
 
-| Mode | Cores |
-| --- | --- |
-| green | all cores, no limit |
-| yellow | about two thirds of the physical cores (the default) |
-| red | about one third |
+| Mode | Claude | Desktop |
+| --- | --- | --- |
+| green | all cores, no core limit | all cores, shared |
+| yellow | about two thirds of the physical cores (the default) | the rest |
+| red | about one third | the rest |
 
 Groups are whole physical cores together with their SMT siblings, counted from the last core
-down, so core 0 stays free for the desktop. On a 10-core / 20-thread machine, yellow is
-`3-9,13-19` and red is `7-9,17-19`.
+down, so core 0 stays with the desktop. On a 10-core / 20-thread machine, yellow gives Claude
+`3-9,13-19` and the desktop `0-2,10-12`; red gives Claude `7-9,17-19` and the desktop
+`0-6,10-16`. In green both get `0-19`. If a hand-set group covers every CPU, the desktop gets all
+of them too. `ccorral status` shows both, e.g. `yellow 3-9,13-19 desktop=0-2,10-12 cpu=idle io=10 mem=75%`.
+
+The desktop side is set with `systemctl --user set-property --runtime`, like the Claude side, so
+it vanishes on reboot and the daemon sets it again at start. Stopping the daemon leaves the
+desktop where it is; only uninstalling widens it again (below).
 
 The choice is saved in `~/.config/ccorral/config`:
 
@@ -93,8 +103,11 @@ To remove it again:
 ritz-get remove ccorral    # or: ./install.sh --remove
 ```
 
-This disables and stops the service and removes the links (`ccorral.service`, `~/.local/bin/ccorral`). The slice file and `~/.config/ccorral/config` stay. The slice
-keeps its CPU limit until reboot; `systemctl --user revert claude.slice` drops it right away.
+This disables and stops the service, widens `app.slice`, `session.slice` and `background.slice` back to
+all CPUs (`ccorral release`, so your desktop is not left pinned; it does not `revert` those slices, your own
+drop-ins stay), and removes the links (`ccorral.service`, `~/.local/bin/ccorral`). The slice file
+and `~/.config/ccorral/config` stay. `claude.slice` keeps its CPU limit until reboot;
+`systemctl --user revert claude.slice` drops it right away.
 
 ## Usage
 
@@ -104,6 +117,8 @@ ccorral green            # or: yellow / red
 ccorral reload           # re-read the config file and re-apply it
 ccorral settings         # terminal UI for the cores per mode, the sweep interval, the icon theme, the CPU and I/O weight and the memory limit
 ccorral -- CMD [ARGS...] # run CMD inside the slice (same: ccorral run [--] CMD [ARGS...])
+ccorral outside -- CMD [ARGS...] # run CMD on the desktop side (app.slice), e.g. a game started from a Claude terminal
+ccorral release          # widen the desktop slices back to all CPUs (uninstall runs this)
 ccorral daemon           # what the service runs
 ccorral help
 ```
@@ -128,6 +143,16 @@ CMD` is the same, with the `--` optional.
 It replaces itself with the command (via `systemd-run --user --scope`), so stdin, the terminal,
 signals and the exit code behave as if you had run the command directly. If it is already
 inside the slice, it just runs the command, so nesting is harmless. A missing command exits 127.
+
+### Running a command on the desktop side
+
+```sh
+ccorral outside -- steam
+```
+
+A command started from a Claude terminal belongs to `claude.slice`. `ccorral outside` starts it
+in `app.slice` instead, with the desktop's cores. Same `systemd-run --user --scope` mechanism,
+same exit codes, and it always goes through `systemd-run`, also when you are already outside.
 
 ### Telling agents to use it
 
@@ -161,6 +186,11 @@ This doesn't recurse: the command is looked up in `PATH`, where shell functions 
   `ccorral -- CMD` to avoid it.
 - Claude sessions from the Claude desktop app are not handled.
 - A process that set its own CPU affinity (e.g. with `taskset`) keeps it. Restart it.
+- Only the user manager's `app.slice`, `session.slice` and `background.slice` are restricted.
+  System services (`system.slice`) and other users are not (that needs root), and neither is
+  anything outside those three slices, such as the user manager's own `init.scope`.
+- In yellow the desktop gets only the remaining third of the cores, even while Claude is idle.
+  If that is too tight, use green (everything shared) or red.
 
 ## Tray icon
 
@@ -168,7 +198,7 @@ The daemon shows a tray icon: a round gauge, an outline with a transparent insid
 the bottom in the colour of the current mode (green, yellow or red). The outline is white for
 `theme=dark` (default) and black for `theme=light`; before the first apply it is just the empty outline. The filled
 area is the share of CPUs Claude may use, so green is full, and with the example above yellow is 70% and red 30%. Hover
-for the tooltip, for example `ccorral — Yellow: 3-9,13-19`.
+for the tooltip, for example `ccorral — Yellow: 3-9,13-19 · desktop 0-2,10-12` (green shows no desktop part, it is shared).
 
 - **Left click** cycles green, yellow, red, green, and so on.
 - **Menu** (right click, or whatever your host does) has three radio rows, one per mode, each

@@ -75,9 +75,16 @@ EOT
 	else echo "restart: systemctl --user restart $NAME.service to use the new version"; fi
 }
 
-# Leaves claude.slice and ~/.config/ccorral alone (user config).
+# Leaves claude.slice and ~/.config/ccorral alone (user config). Stopping the service does not
+# widen app.slice, session.slice and background.slice (the mode persists while ccorral is
+# installed), so this does it: `ccorral release` sets AllowedCPUs to all CPUs, no `systemctl revert`.
 remove_files() {
-	if has_manager; then systemctl --user disable --now "$NAME.service" 2>/dev/null || true; fi
+	if has_manager; then
+		systemctl --user disable --now "$NAME.service" 2>/dev/null || true
+		if [ -x "$dir/$TARGET" ]; then
+			"$dir/$TARGET" release || echo "note: could not widen app.slice, session.slice and background.slice; they keep their CPU limit until reboot"
+		fi
+	fi
 	unlink_ours "$cfg/systemd/user/default.target.wants/$NAME.service"
 	unlink_ours "$unit"
 	if has_manager; then systemctl --user daemon-reload || true; fi

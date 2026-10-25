@@ -42,7 +42,7 @@ func newFakeTrayBackend(mode string) *fakeTrayBackend {
 func (f *fakeTrayBackend) Snapshot() sliceSnapshot {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	s := sliceSnapshot{Mode: f.snap.Mode, Theme: f.snap.Theme, Cores: map[string]string{}}
+	s := sliceSnapshot{Mode: f.snap.Mode, Theme: f.snap.Theme, Desktop: f.snap.Desktop, Cores: map[string]string{}}
 	for k, v := range f.snap.Cores {
 		s.Cores[k] = v
 	}
@@ -486,6 +486,27 @@ func TestTrayTooltipText(t *testing.T) {
 	}
 	if got := trayTitle(sliceSnapshot{Mode: "green"}); got != "ccorral — Green: all cores" {
 		t.Errorf("green without cores: %q", got)
+	}
+}
+
+// The title and tooltip add the desktop cores, except in green (shared) and
+// when they are unknown.
+func TestTrayTooltipDesktop(t *testing.T) {
+	cores := map[string]string{"green": "0-19", "yellow": "3-9,13-19", "red": "7-9,17-19"}
+	for _, tt := range []struct{ mode, desktop, want string }{
+		{"yellow", "0-2,10-12", "ccorral — Yellow: 3-9,13-19 · desktop 0-2,10-12"},
+		{"red", "0-6,10-16", "ccorral — Red: 7-9,17-19 · desktop 0-6,10-16"},
+		{"green", "0-19", "ccorral — Green: all cores (0-19)"},
+		{"yellow", "", "ccorral — Yellow: 3-9,13-19"},
+		{"", "0-2", "ccorral — not applied yet"},
+	} {
+		s := sliceSnapshot{Mode: tt.mode, Cores: cores, Desktop: tt.desktop}
+		if got := trayTitle(s); got != tt.want {
+			t.Errorf("title(%+v) = %q, want %q", tt, got, tt.want)
+		}
+		if got := trayTooltipFor(s).Title; got != tt.want {
+			t.Errorf("tooltip(%+v) = %q, want %q", tt, got, tt.want)
+		}
 	}
 }
 
