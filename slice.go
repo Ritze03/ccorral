@@ -13,7 +13,9 @@ package main
 //
 // The rest of the desktop gets the remaining cores: AllowedCPUs (only that) on
 // app.slice, session.slice and background.slice is set to all CPUs minus the
-// mode's group, so Claude and the desktop never share cores. Green shares all.
+// mode's group, so Claude and the desktop never share cores. Green shares all, and
+// so does split=off in every mode: the slices are still set, to every CPU, so
+// turning the split off live widens the desktop at once.
 // Stopping the daemon leaves it as is; only uninstall widens it again.
 
 import (
@@ -23,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -68,9 +71,10 @@ func outsideArgs(slice string, cpus []int) []string {
 }
 
 // outsideCPUs is what the desktop gets: all minus group, or all when that would
-// be empty (green, or a hand-set group covering every CPU) - never an empty list.
-func outsideCPUs(all, group []int, mode string) []int {
-	if mode == modeGreen {
+// be empty (green, split off, or a hand-set group covering every CPU) - never
+// an empty list.
+func outsideCPUs(all, group []int, mode string, split bool) []int {
+	if mode == modeGreen || !split {
 		return all
 	}
 	in := map[int]bool{}
@@ -145,7 +149,7 @@ type sliceBackend struct {
 type sliceSnapshot struct {
 	Mode    string            // "green" | "yellow" | "red" ("" before first successful apply)
 	Cores   map[string]string // "green","yellow","red" -> cpulist, e.g. "3-9,13-19"
-	Desktop string            // cores the other slices got, e.g. "0-2,10-12"; "" if unknown or an outside call failed
+	Desktop string            // cores the other slices got, e.g. "0-2,10-12"; "" if unknown, all of them (green, split off) or an outside call failed
 	Theme   string            // themeLight | themeDark ("" before first successful apply)
 }
 
@@ -227,10 +231,13 @@ func (b *sliceBackend) apply(cfg Config, err error) error {
 	// reported but does not undo it.
 	var outside []int // empty only without a topology: then the desktop is left alone
 	if len(all) > 0 {
-		outside = outsideCPUs(all, group, cfg.Mode)
+		outside = outsideCPUs(all, group, cfg.Mode, cfg.Split)
 	}
 	failed := b.applyOutside(outside)
 	desktop, desktopStatus := cpuFormat(outside), "desktop="+cpuFormat(outside)
+	if len(outside) > 0 && slices.Equal(outside, all) {
+		desktop = "" // the desktop got every core: nothing for the tray to add
+	}
 	if len(failed) > 0 {
 		desktop, desktopStatus = "", "desktop=failed("+strings.Join(failed, ",")+")"
 	}

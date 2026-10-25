@@ -52,6 +52,7 @@ func TestSettingsLoadAndRender(t *testing.T) {
 		"0  1  2  3  4  5  6  7  8  9",
 		"Yellow   [ ][ ][ ][x][x][x][x][x][x][x]   3-9,13-19",
 		"Red      [ ][ ][ ][ ][ ][ ][ ][x][x][x]   7-9,17-19",
+		"Split    on (desktop gets the other cores)",
 		"Interval 5000 ms   (500–10000)",
 		"Theme    dark (white outline)",
 		"CPU wt   idle   (idle, 1–10000; 100 = systemd default)",
@@ -210,7 +211,7 @@ func TestSettingsInterval(t *testing.T) {
 
 func TestSettingsDefault(t *testing.T) {
 	s, _, _ := settingsFixture(t)
-	s.yellow, s.red, s.interval, s.cpuWeight = []int{0, 10}, []int{1, 11}, 1500, "250"
+	s.yellow, s.red, s.interval, s.cpuWeight, s.split = []int{0, 10}, []int{1, 11}, 1500, "250", false
 	s.ioWeight, s.memoryHigh = "250", "16G"
 
 	for _, tc := range []struct {
@@ -221,6 +222,7 @@ func TestSettingsDefault(t *testing.T) {
 			return reflect.DeepEqual(s.yellow, []int{3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 16, 17, 18, 19})
 		}},
 		{settingsRowRed, func(s settingsState) bool { return reflect.DeepEqual(s.red, []int{7, 8, 9, 17, 18, 19}) }},
+		{settingsRowSplit, func(s settingsState) bool { return s.split }},
 		{settingsRowInterval, func(s settingsState) bool { return s.interval == intervalDefault }},
 		{settingsRowCPUWeight, func(s settingsState) bool { return s.cpuWeight == weightIdle }},
 		{settingsRowIOWeight, func(s settingsState) bool { return s.ioWeight == "10" }},
@@ -268,7 +270,7 @@ func TestSettingsSave(t *testing.T) {
 		t.Errorf("config after red toggle:\n%s", got)
 	}
 
-	save("down", "right") // interval 5500
+	save("down", "down", "right") // interval 5500
 	if got := readCfg(t, path); !strings.Contains(got, "interval=5500") {
 		t.Errorf("config after interval:\n%s", got)
 	}
@@ -278,7 +280,7 @@ func TestSettingsSave(t *testing.T) {
 		t.Errorf("config after interval reset:\n%s", got)
 	}
 
-	save("up", "default") // red row reset: key dropped
+	save("up", "up", "default") // red row reset: key dropped
 	got := readCfg(t, path)
 	if strings.Contains(got, "red=") || !strings.Contains(got, "yellow=4-9,14-19") {
 		t.Errorf("config after red reset:\n%s", got)
@@ -408,6 +410,54 @@ func TestSettingsTheme(t *testing.T) {
 	// The limit rows are below it, and nothing is below the last.
 	if s, _ = press(s, "down", "down", "down", "down"); s.row != settingsRowMemoryHigh {
 		t.Errorf("row %d", s.row)
+	}
+}
+
+func TestSettingsSplit(t *testing.T) {
+	s, path, sys := settingsFixture(t)
+	s.row = settingsRowSplit
+	if !s.split {
+		t.Fatal("split should default to on")
+	}
+	// Every toggling key flips it and asks for a save; inc/dec are for the interval only.
+	for _, k := range []string{"right", "toggle", "left"} { // off, on, off
+		var act settingsAct
+		s, act = press(s, k)
+		if act != settingsActWrite {
+			t.Errorf("%s: act %d", k, act)
+		}
+	}
+	if s.split || !strings.Contains(plain(settingsRender(s)), "Split    off (desktop uses all cores)") {
+		t.Errorf("split %v:\n%s", s.split, plain(settingsRender(s)))
+	}
+	if n, act := press(s, "inc"); n.split || act != settingsActNone {
+		t.Errorf("inc: split %v act %d", n.split, act)
+	}
+	// Saved immediately, reload sent, and a fresh process sees it.
+	calls := 0
+	reload := func() error { calls++; return nil }
+	s = settingsSave(path, sys, s, settingsActWrite, reload)
+	if got := readCfg(t, path); got != "split=off\n" || calls != 1 || s.status != settingsReloadedOK {
+		t.Errorf("config %q calls %d status %q", got, calls, s.status)
+	}
+	if n, err := settingsLoad(path, sys); err != nil || n.split {
+		t.Errorf("reload from disk: %+v err %v", n, err)
+	}
+	// d resets to on and saves it.
+	s, act := press(s, "default")
+	if !s.split || act != settingsActReset {
+		t.Fatalf("default: split %v act %d", s.split, act)
+	}
+	settingsSave(path, sys, s, act, reload)
+	if got := readCfg(t, path); got != "split=on\n" || calls != 2 {
+		t.Errorf("config %q calls %d", got, calls)
+	}
+	// It sits between the Red row and the Interval row.
+	if n, _ := press(s, "up"); n.row != settingsRowRed {
+		t.Errorf("row above: %d", n.row)
+	}
+	if n, _ := press(s, "down"); n.row != settingsRowInterval {
+		t.Errorf("row below: %d", n.row)
 	}
 }
 

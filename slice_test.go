@@ -508,3 +508,65 @@ func TestSliceRelease(t *testing.T) {
 		t.Errorf("no topology: err = %v, calls = %v", err, calls)
 	}
 }
+
+// With split=off the desktop gets every CPU in every mode (still set, never
+// empty), the status says so, and the snapshot has no desktop part for the tray.
+func TestSliceSplitOff(t *testing.T) {
+	for _, tt := range []struct{ mode, cpulist string }{
+		{modeGreen, "0-19"}, {modeYellow, "3-9,13-19"}, {modeRed, "7-9,17-19"},
+	} {
+		t.Run(tt.mode, func(t *testing.T) {
+			b, calls := newTestSlice(t)
+			writeCfg(t, b.path, "split=off\n")
+			if err := b.SetMode(tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			if want := wantCalls([][]string{wantArgs(tt.cpulist)}, "0-19"); !reflect.DeepEqual(*calls, want) {
+				t.Errorf("argv = %v, want %v", *calls, want)
+			}
+			if got, want := b.Status(), tt.mode+" "+tt.cpulist+" desktop=0-19 cpu=idle io=10 mem=75%"; got != want {
+				t.Errorf("Status = %q, want %q", got, want)
+			}
+			if s := b.Snapshot(); s.Mode != tt.mode || s.Desktop != "" {
+				t.Errorf("Snapshot = %+v, want %s without desktop", s, tt.mode)
+			}
+		})
+	}
+}
+
+// Turning the split off and on again in the config takes effect on Reload.
+func TestSliceSplitReload(t *testing.T) {
+	b, calls := newTestSlice(t)
+	if err := b.SetMode(modeYellow); err != nil {
+		t.Fatal(err)
+	}
+	if s := b.Snapshot(); s.Desktop != "0-2,10-12" {
+		t.Errorf("split on: Snapshot.Desktop = %q", s.Desktop)
+	}
+	for _, step := range []struct {
+		on      bool
+		outside string
+		status  string
+		desktop string
+	}{
+		{false, "0-19", "yellow 3-9,13-19 desktop=0-19 cpu=idle io=10 mem=75%", ""},
+		{true, "0-2,10-12", "yellow 3-9,13-19 desktop=0-2,10-12 cpu=idle io=10 mem=75%", "0-2,10-12"},
+	} {
+		*calls = nil
+		if err := configSetSplit(b.path, step.on); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Reload(); err != nil {
+			t.Fatal(err)
+		}
+		if want := wantCalls([][]string{wantArgs("3-9,13-19")}, step.outside); !reflect.DeepEqual(*calls, want) {
+			t.Errorf("split=%v: argv = %v, want %v", step.on, *calls, want)
+		}
+		if got := b.Status(); got != step.status {
+			t.Errorf("split=%v: Status = %q, want %q", step.on, got, step.status)
+		}
+		if s := b.Snapshot(); s.Desktop != step.desktop {
+			t.Errorf("split=%v: Snapshot.Desktop = %q, want %q", step.on, s.Desktop, step.desktop)
+		}
+	}
+}

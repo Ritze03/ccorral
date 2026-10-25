@@ -43,6 +43,7 @@ theme=dark
 cpuweight=idle
 ioweight=10
 memoryhigh=75%
+split=on
 ```
 
 `yellow=` and `red=` are optional cpulists you can set by hand; a missing or empty key means
@@ -60,6 +61,11 @@ access wins over Claude's. It only has an effect on disks using the BFQ I/O sche
 (default) or a size like `16G` (suffixes K, M, G, T). Above it the kernel throttles the slice and reclaims its
 memory instead of letting it push the desktop into swap; it does not kill anything.
 Both are applied in every mode, with invalid values ignored with a log line.
+`split=` is `on` (default) or `off`; anything else is ignored with a log line. On means Claude and the
+desktop never share cores: the desktop slices get the cores Claude does not. Off means the desktop may use
+every core while Claude stays pinned to its group, as it was before the split existed; the desktop slices are
+still set, to all CPUs, so switching it off widens them right away. Then `ccorral status` shows
+`desktop=0-19` in every mode and the tray tooltip has no desktop part.
 After editing the file, run `ccorral reload` so the daemon picks it up. Or skip the editing and
 use `ccorral settings` (below).
 
@@ -115,7 +121,7 @@ and `~/.config/ccorral/config` stay. `claude.slice` keeps its CPU limit until re
 ccorral                  # same as: ccorral status
 ccorral green            # or: yellow / red
 ccorral reload           # re-read the config file and re-apply it
-ccorral settings         # terminal UI for the cores per mode, the sweep interval, the icon theme, the CPU and I/O weight and the memory limit
+ccorral settings         # terminal UI for the cores per mode, the split, the sweep interval, the icon theme, the CPU and I/O weight and the memory limit
 ccorral -- CMD [ARGS...] # run CMD inside the slice (same: ccorral run [--] CMD [ARGS...])
 ccorral outside -- CMD [ARGS...] # run CMD on the desktop side (app.slice), e.g. a game started from a Claude terminal
 ccorral release          # widen the desktop slices back to all CPUs (uninstall runs this)
@@ -190,7 +196,8 @@ This doesn't recurse: the command is looked up in `PATH`, where shell functions 
   System services (`system.slice`) and other users are not (that needs root), and neither is
   anything outside those three slices, such as the user manager's own `init.scope`.
 - In yellow the desktop gets only the remaining third of the cores, even while Claude is idle.
-  If that is too tight, use green (everything shared) or red.
+  If that is too tight, use green (everything shared) or red, or set `split=off` so the desktop
+  may use every core (Claude stays pinned, so the two share cores again).
 
 ## Tray icon
 
@@ -198,7 +205,7 @@ The daemon shows a tray icon: a round gauge, an outline with a transparent insid
 the bottom in the colour of the current mode (green, yellow or red). The outline is white for
 `theme=dark` (default) and black for `theme=light`; before the first apply it is just the empty outline. The filled
 area is the share of CPUs Claude may use, so green is full, and with the example above yellow is 70% and red 30%. Hover
-for the tooltip, for example `ccorral — Yellow: 3-9,13-19 · desktop 0-2,10-12` (green shows no desktop part, it is shared).
+for the tooltip, for example `ccorral — Yellow: 3-9,13-19 · desktop 0-2,10-12` (green and `split=off` show no desktop part, the desktop has every core there).
 
 - **Left click** cycles green, yellow, red, green, and so on.
 - **Menu** (right click, or whatever your host does) has three radio rows, one per mode, each
@@ -218,18 +225,19 @@ ccorral settings
 
 A full-screen terminal UI for the config file. It shows a grid with one column per physical
 core and a row each for Yellow and Red; `[x]` means the core is in that group. SMT siblings
-always toggle together, and the last core of a group can't be unchecked. The third row is the
-sweep interval, 500 to 10000 ms in 500 ms steps. The fourth is the icon theme, `dark (white
-outline)` (default) or `light (black outline)`. The fifth is the CPU weight: left/right steps through `idle`, 1, 10, 50, 100
-(systemd's normal weight), 200, 500, 1000 and 10000. The sixth is the I/O weight, the same
-steps without `idle`. The seventh is the memory limit: 25%, 50%, 60%, 75%, 90% and `infinity`. A value you
+always toggle together, and the last core of a group can't be unchecked. The next row is Split:
+`on (desktop gets the other cores)` (default) or `off (desktop uses all cores)`. Then come the
+sweep interval, 500 to 10000 ms in 500 ms steps, and the icon theme, `dark (white
+outline)` (default) or `light (black outline)`. Next is the CPU weight: left/right steps through `idle`, 1, 10, 50, 100
+(systemd's normal weight), 200, 500, 1000 and 10000. Then the I/O weight, the same
+steps without `idle`, and last the memory limit: 25%, 50%, 60%, 75%, 90% and `infinity`. A value you
 set by hand in the file is shown as is; stepping from a hand-set weight goes to the next preset, from a hand-set
 size to 75%.
 
 | Key | Action |
 | --- | --- |
-| arrows or `h` `j` `k` `l` | move; on the Interval row left/right changes the value, on the Theme row it toggles, on the CPU wt, IO wt and Mem high rows it steps |
-| space or enter | toggle the core under the cursor, or the theme |
+| arrows or `h` `j` `k` `l` | move; on the Interval row left/right changes the value, on the Split and Theme rows it toggles, on the CPU wt, IO wt and Mem high rows it steps |
+| space or enter | toggle the core under the cursor, the split or the theme |
 | `+` / `-` | change the interval |
 | `d` | reset the row to its default |
 | `q`, Esc | quit |

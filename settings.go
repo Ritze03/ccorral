@@ -1,7 +1,7 @@
 package main
 
 // settings.go is `ccorral settings`: a small full-screen terminal UI over the
-// config file (config.go) for the two core groups, the sweep interval, the icon theme and the slice's CPU weight, IO weight and memory limit. Mode
+// config file (config.go) for the two core groups, the split switch, the sweep interval, the icon theme and the slice's CPU weight, IO weight and memory limit. Mode
 // switching is not here; that is the tray and `ccorral green|yellow|red`.
 //
 // It is a separate, short-lived process on purpose: every change is written
@@ -52,6 +52,7 @@ const (
 const (
 	settingsRowYellow = iota
 	settingsRowRed
+	settingsRowSplit
 	settingsRowInterval
 	settingsRowTheme
 	settingsRowCPUWeight
@@ -78,6 +79,7 @@ var (
 type settingsState struct {
 	cores       [][]int
 	yellow, red []int
+	split       bool // desktop gets the cores Claude does not
 	interval    int
 	theme       string // themeLight or themeDark
 	cpuWeight   string // weightIdle or "1".."10000"
@@ -97,7 +99,7 @@ func settingsLoad(path, sysRoot string) (settingsState, error) {
 	if err != nil {
 		return settingsState{}, err
 	}
-	return settingsState{cores: cores, yellow: c.Yellow, red: c.Red, interval: c.IntervalMs, theme: c.Theme,
+	return settingsState{cores: cores, yellow: c.Yellow, red: c.Red, split: c.Split, interval: c.IntervalMs, theme: c.Theme,
 		cpuWeight: c.CPUWeight, ioWeight: c.IOWeight, memoryHigh: c.MemoryHigh}, nil
 }
 
@@ -148,6 +150,13 @@ func settingsRender(s settingsState) string {
 		}
 		b.WriteString("   " + cpuFormat(list) + "\n")
 	}
+
+	split := "off (desktop uses all cores)"
+	if s.split {
+		split = "on (desktop gets the other cores)"
+	}
+	fmt.Fprintf(&b, "  %-9s", "Split")
+	b.WriteString(cur(s.row == settingsRowSplit, split) + "\n")
 
 	fmt.Fprintf(&b, "  %-9s", "Interval")
 	b.WriteString(cur(s.row == settingsRowInterval, fmt.Sprintf("%d ms", s.interval)))
@@ -211,6 +220,8 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 		switch s.row {
 		case settingsRowInterval:
 			return settingsStep(s, step)
+		case settingsRowSplit:
+			return settingsSplit(s)
 		case settingsRowTheme:
 			return settingsTheme(s)
 		case settingsRowCPUWeight, settingsRowIOWeight, settingsRowMemoryHigh:
@@ -229,6 +240,8 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 		}
 	case "toggle":
 		switch s.row {
+		case settingsRowSplit:
+			return settingsSplit(s)
 		case settingsRowTheme:
 			return settingsTheme(s)
 		case settingsRowInterval, settingsRowCPUWeight, settingsRowIOWeight, settingsRowMemoryHigh:
@@ -242,6 +255,8 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 			s.yellow = yellow
 		case settingsRowRed:
 			s.red = red
+		case settingsRowSplit:
+			s.split = true
 		case settingsRowInterval:
 			s.interval = intervalDefault
 		case settingsRowCPUWeight:
@@ -256,6 +271,12 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 		return s, settingsActReset
 	}
 	return s, settingsActNone
+}
+
+// settingsSplit flips the split between on and off.
+func settingsSplit(s settingsState) (settingsState, settingsAct) {
+	s.split = !s.split
+	return s, settingsActWrite
 }
 
 // settingsTheme flips between the two themes.
@@ -353,6 +374,8 @@ func settingsToggle(s settingsState) (settingsState, settingsAct) {
 func settingsSave(path, sysRoot string, s settingsState, act settingsAct, reload func() error) settingsState {
 	var err error
 	switch {
+	case s.row == settingsRowSplit:
+		err = configSetSplit(path, s.split)
 	case s.row == settingsRowInterval:
 		err = configSetInterval(path, s.interval)
 	case s.row == settingsRowTheme:

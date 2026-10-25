@@ -474,3 +474,61 @@ func TestConfigSetMemoryHigh(t *testing.T) {
 		t.Errorf("config = %q", got)
 	}
 }
+
+func TestConfigSplit(t *testing.T) {
+	sys := fakeSys(t, smt10())
+	for _, tt := range []struct {
+		file    string
+		want    bool
+		wantLog bool
+	}{
+		{"", true, false},
+		{"split=\n", true, false},
+		{"split=on\n", true, false},
+		{"split=off\n", false, false},
+		{"split = off\n", false, false},
+		{"split=on\nsplit=off\n", false, false}, // later lines win
+		{"split=Off\n", true, true},
+		{"split=maybe\n", true, true},
+		{"split=false\n", true, true},
+	} {
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		path := cfgPath(t)
+		writeCfg(t, path, tt.file)
+		c, err := configLoad(path, sys)
+		log.SetOutput(os.Stderr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Split != tt.want {
+			t.Errorf("%q: Split = %v, want %v", tt.file, c.Split, tt.want)
+		}
+		if got := strings.Contains(buf.String(), "config: ignoring split="); got != tt.wantLog {
+			t.Errorf("%q: logged = %v (%q)", tt.file, got, buf.String())
+		}
+	}
+	// Also set when the topology is unreadable.
+	if c, err := configLoad(cfgPath(t), t.TempDir()); err == nil || !c.Split {
+		t.Errorf("no topology: %+v, %v", c, err)
+	}
+}
+
+func TestConfigSetSplit(t *testing.T) {
+	path := cfgPath(t)
+	writeCfg(t, path, "mode=red\n")
+	for _, on := range []bool{false, true, false} {
+		if err := configSetSplit(path, on); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := readCfg(t, path); got != "mode=red\nsplit=off\n" {
+		t.Errorf("config = %q", got)
+	}
+	if err := configSetSplit(path, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := readCfg(t, path); got != "mode=red\nsplit=on\n" {
+		t.Errorf("config = %q", got)
+	}
+}

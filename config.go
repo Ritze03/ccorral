@@ -14,12 +14,14 @@ package main
 //	cpuweight=idle|<1-10000>
 //	ioweight=<1-10000>
 //	memoryhigh=infinity|<1-100>%|<bytes>[K|M|G|T]
+//	split=on|off
 //
 // green means no limit, yellow and red mean "pin to that group". A missing or
 // empty group key means the default computed from the topology (cpuDefaults).
 // cpuweight, ioweight and memoryhigh are the slice's CPUWeight, IOWeight and
 // MemoryHigh in every mode; cpuweight=idle means it only gets CPU time nothing
-// else wants.
+// else wants. split=on (default) gives the desktop slices the cores Claude does
+// not have; off leaves them every core.
 // Blank lines, "#" comments and unknown keys are kept as they are on rewrite.
 
 import (
@@ -42,6 +44,12 @@ const (
 const (
 	themeLight = "light" // black outline
 	themeDark  = "dark"  // white outline (default)
+)
+
+// split= values: on is the default.
+const (
+	splitOn  = "on"
+	splitOff = "off"
 )
 
 // Sweep interval in milliseconds: the allowed range and the default.
@@ -116,6 +124,7 @@ type Config struct {
 	CPUWeight      string // weightIdle or "1".."10000"
 	IOWeight       string // "1".."10000"
 	MemoryHigh     string // memoryHighInfinity, "<n>%" or "<n>[KMGT]"
+	Split          bool   // desktop slices get the cores Claude does not (default); false: they get every core
 }
 
 // Group is the CPU set a mode pins to; nil for green (no limit).
@@ -212,7 +221,7 @@ func configSet(path, key, value string) error {
 // the topology failing, in which case the groups are nil.
 func configLoad(path, sysRoot string) (Config, error) {
 	kv := configKV(path)
-	c := Config{Mode: modeYellow, IntervalMs: intervalDefault, Theme: themeDark, CPUWeight: weightIdle, IOWeight: ioWeightDefault, MemoryHigh: memoryHighDefault}
+	c := Config{Mode: modeYellow, IntervalMs: intervalDefault, Theme: themeDark, CPUWeight: weightIdle, IOWeight: ioWeightDefault, MemoryHigh: memoryHighDefault, Split: true}
 	switch kv["mode"] {
 	case modeGreen, modeYellow, modeRed:
 		c.Mode = kv["mode"]
@@ -251,6 +260,13 @@ func configLoad(path, sysRoot string) (Config, error) {
 		} else {
 			log.Printf("config: ignoring memoryhigh=%q: want %s, a percentage like 75%%, or a size like 16G", v, memoryHighInfinity)
 		}
+	}
+	switch v := kv["split"]; v {
+	case "", splitOn:
+	case splitOff:
+		c.Split = false
+	default:
+		log.Printf("config: ignoring split=%q: want %s or %s", v, splitOn, splitOff)
 	}
 	cores, err := cpuCores(sysRoot)
 	if err != nil {
@@ -355,4 +371,12 @@ func configSetMemoryHigh(path, v string) error {
 		return fmt.Errorf("memoryhigh %q: want %s, a percentage like 75%%, or a size like 16G", v, memoryHighInfinity)
 	}
 	return configSet(path, "memoryhigh", v)
+}
+
+// configSetSplit persists whether the desktop gets only the cores Claude does not.
+func configSetSplit(path string, on bool) error {
+	if on {
+		return configSet(path, "split", splitOn)
+	}
+	return configSet(path, "split", splitOff)
 }

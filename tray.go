@@ -376,7 +376,8 @@ func trayModeText(s sliceSnapshot) string {
 	return trayModeName(s.Mode) + ": " + cores
 }
 
-// trayTitle adds the desktop cores (not in green, where they are shared):
+// trayTitle adds the desktop cores (not in green or with split=off, where the
+// desktop has every core and Desktop is empty):
 // "ccorral — Yellow: 3-9,13-19 · desktop 0-2,10-12".
 func trayTitle(s sliceSnapshot) string {
 	t := "ccorral — " + trayModeText(s)

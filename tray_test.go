@@ -693,3 +693,27 @@ func TestRunTrayCancelled(t *testing.T) {
 		t.Fatal("RunTray did not return for a cancelled context")
 	}
 }
+
+// With split=off the real backend's snapshot has no desktop part, so the title
+// and tooltip show none; with the split on they do.
+func TestTrayTitleSplitOff(t *testing.T) {
+	b, _ := newTestSlice(t)
+	for _, tt := range []struct{ file, want string }{
+		{"mode=yellow\n", "ccorral — Yellow: 3-9,13-19 · desktop 0-2,10-12"},
+		{"mode=yellow\nsplit=off\n", "ccorral — Yellow: 3-9,13-19"},
+		{"mode=red\nsplit=off\n", "ccorral — Red: 7-9,17-19"},
+		{"mode=red\nsplit=on\n", "ccorral — Red: 7-9,17-19 · desktop 0-6,10-16"},
+	} {
+		writeCfg(t, b.path, tt.file)
+		if err := b.Reload(); err != nil {
+			t.Fatal(err)
+		}
+		s := b.Snapshot()
+		if got := trayTitle(s); got != tt.want {
+			t.Errorf("%q: title = %q, want %q", tt.file, got, tt.want)
+		}
+		if got := trayTooltipFor(s).Title; got != tt.want {
+			t.Errorf("%q: tooltip = %q, want %q", tt.file, got, tt.want)
+		}
+	}
+}
