@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // newTestSlice is a sliceBackend on a temp config and a fake 10-core SMT sysfs
@@ -568,5 +570,45 @@ func TestSliceSplitReload(t *testing.T) {
 		if s := b.Snapshot(); s.Desktop != step.desktop {
 			t.Errorf("split=%v: Snapshot.Desktop = %q, want %q", step.on, s.Desktop, step.desktop)
 		}
+	}
+}
+
+// A slice that widens moves the threads pinned to its old cpuset, and only them.
+func TestSliceWidenMovesPinnedThreads(t *testing.T) {
+	b, _ := newTestSlice(t)
+	dir := b.sliceDir("app.slice")
+	cpusFile := filepath.Join(dir, "cpuset.cpus.effective")
+	write := func(path, s string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(cpusFile, "0-3\n")
+	write(filepath.Join(dir, "cgroup.threads"), "10\n11\n")
+	write(filepath.Join(dir, "app-wine.scope/cgroup.threads"), "12\n13\n")
+	b.run = func(args ...string) error { write(cpusFile, "0-9\n"); return nil }
+
+	set := func(cpus ...int) (s unix.CPUSet) {
+		for _, c := range cpus {
+			s.Set(c)
+		}
+		return
+	}
+	masks := map[int]unix.CPUSet{10: set(0, 1, 2, 3), 11: set(2), 12: set(0, 1, 2, 3), 13: set(0, 1, 2, 3, 4)}
+	moved := map[int]unix.CPUSet{}
+	getAffinity = func(tid int, s *unix.CPUSet) error { *s = masks[tid]; return nil }
+	setAffinity = func(tid int, s *unix.CPUSet) error { moved[tid] = *s; return nil }
+	t.Cleanup(func() { getAffinity, setAffinity = unix.SchedGetaffinity, unix.SchedSetaffinity })
+
+	if err := b.setSlice("app.slice", outsideArgs("app.slice", []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9})); err != nil {
+		t.Fatal(err)
+	}
+	all := set(0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+	if want := (map[int]unix.CPUSet{10: all, 12: all}); !reflect.DeepEqual(moved, want) {
+		t.Errorf("moved %v, want %v", moved, want)
 	}
 }

@@ -17,6 +17,12 @@ package main
 // so does split=off in every mode: the slices are still set, to every CPU, so
 // turning the split off live widens the desktop at once.
 // Stopping the daemon leaves it as is; only uninstall widens it again.
+//
+// A cpuset only narrows what a thread asked for: a thread that pinned itself
+// to the old set (Wine does at startup) stays there when the set widens. So
+// after each change, threads whose affinity equals the old effective set exactly
+// are moved to the new one; threads with any other mask are left alone. This is
+// best effort: it is logged, never an error.
 
 import (
 	"context"
@@ -27,10 +33,14 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // sliceCallTimeout stays under the IPC client's ipcTimeout (set-property is fast).
@@ -48,6 +58,71 @@ func sliceSystemctl(args ...string) error {
 		return fmt.Errorf("systemctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// getAffinity and setAffinity are the scheduler calls; tests replace them.
+var (
+	getAffinity = unix.SchedGetaffinity
+	setAffinity = unix.SchedSetaffinity
+)
+
+// sliceDir is a top-level slice of the user manager in cgroupfs under b.sysRoot.
+func (b *sliceBackend) sliceDir(slice string) string {
+	uid := os.Getuid()
+	return filepath.Join(b.sysRoot, "fs/cgroup/user.slice", fmt.Sprintf("user-%d.slice/user@%d.service", uid, uid), slice)
+}
+
+// setSlice runs args (a set-property call for slice). If that changes the
+// slice's effective cpuset, threads pinned to the old one move to the new one.
+func (b *sliceBackend) setSlice(slice string, args []string) error {
+	read := func() []int {
+		raw, err := os.ReadFile(filepath.Join(b.sliceDir(slice), "cpuset.cpus.effective"))
+		if err != nil {
+			return nil
+		}
+		l, _ := cpuParse(string(raw))
+		return l
+	}
+	old := read()
+	if err := b.run(args...); err != nil {
+		return err
+	}
+	if cur := read(); len(old) > 0 && len(cur) > 0 && !slices.Equal(old, cur) {
+		b.rewiden(slice, old, cur)
+	}
+	return nil
+}
+
+// rewiden sets cur on every thread under slice whose affinity is exactly old.
+func (b *sliceBackend) rewiden(slice string, old, cur []int) {
+	var from, to unix.CPUSet
+	for _, c := range old {
+		from.Set(c)
+	}
+	for _, c := range cur {
+		to.Set(c)
+	}
+	var first error
+	filepath.WalkDir(b.sliceDir(slice), func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.Name() != "cgroup.threads" {
+			return nil
+		}
+		raw, _ := os.ReadFile(path)
+		for _, f := range strings.Fields(string(raw)) {
+			tid, _ := strconv.Atoi(f)
+			var got unix.CPUSet
+			if getAffinity(tid, &got) != nil || got != from {
+				continue
+			}
+			if err := setAffinity(tid, &to); err != nil && err != syscall.ESRCH && err != syscall.EPERM && first == nil {
+				first = err
+			}
+		}
+		return nil
+	})
+	if first != nil {
+		log.Printf("ccorral: %s: moving threads to %s: %v", slice, cpuFormat(cur), first)
+	}
 }
 
 // sliceArgs is the systemctl argv that sets claude.slice to cpus and cfg's
@@ -101,7 +176,7 @@ func (b *sliceBackend) applyOutside(cpus []int) (failed []string) {
 		return nil
 	}
 	for _, sl := range outsideSlices {
-		if err := b.run(outsideArgs(sl, cpus)...); err != nil {
+		if err := b.setSlice(sl, outsideArgs(sl, cpus)); err != nil {
 			log.Printf("ccorral: %s: %v", sl, err)
 			failed = append(failed, sl)
 		}
@@ -122,7 +197,7 @@ func sliceRelease(sysRoot string, run sliceRunner) (string, error) {
 		all = append(all, c...)
 	}
 	sort.Ints(all)
-	b := &sliceBackend{run: run}
+	b := &sliceBackend{sysRoot: sysRoot, run: run}
 	if failed := b.applyOutside(all); len(failed) > 0 {
 		return cpuFormat(all), fmt.Errorf("could not widen %s", strings.Join(failed, ", "))
 	}
@@ -224,7 +299,7 @@ func (b *sliceBackend) apply(cfg Config, err error) error {
 	if len(group) == 0 {
 		return fmt.Errorf("%s has no CPUs: refusing to clear the limit", cfg.Mode)
 	}
-	if err := b.run(sliceArgs(group, cfg)...); err != nil {
+	if err := b.setSlice(sweepSlice, sliceArgs(group, cfg)); err != nil {
 		return err
 	}
 	// claude.slice is applied. Now the desktop gets the rest; a failure there is

@@ -66,6 +66,9 @@ desktop never share cores: the desktop slices get the cores Claude does not. Off
 every core while Claude stays pinned to its group, as it was before the split existed; the desktop slices are
 still set, to all CPUs, so switching it off widens them right away. Then `ccorral status` shows
 `desktop=0-19` in every mode and the tray tooltip has no desktop part.
+When a slice's cores change, threads that had pinned themselves to its old cores (Wine does this at
+startup, and the kernel keeps such a mask when the slice widens) are moved to the new ones; threads pinned
+to anything else are left alone.
 After editing the file, run `ccorral reload` so the daemon picks it up. Or skip the editing and
 use `ccorral settings` (below).
 
