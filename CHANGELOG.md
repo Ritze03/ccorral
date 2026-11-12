@@ -10,66 +10,35 @@ All notable user-facing changes, newest first. Categories:
 ## 2026-10-28
 
 ### Fixed
-- **Pinned threads follow slice changes**: Threads that were pinned to a slice's old CPUs
-  are moved when its allowed CPUs change, so a changed core selection takes effect
-  everywhere.
+- **Core changes apply everywhere**: Changing the core selection now also affects
+  programs that were already running.
 
 ## 2026-10-25
 
 ### Added
-- **CPU split**: The desktop slices (`app`, `session`, `background`) get the cores Claude
-  does not, so Claude and your desktop never share cores. `ccorral` can run outside the
-  split and release it.
-- **Split switch**: `split=on|off` in the config and a Split row in settings turn the
-  split off. The tray shows no desktop part when the desktop already has every core.
+- **CPU split**: Your desktop gets the cores Claude does not use, so it stays smooth.
+- **Split switch**: The split can be turned off in settings.
 
 ## 2026-10-24
 
-### Removed
-- **Built-in installer**: `ccorral install` and `uninstall` are gone. `install.sh` (or
-  `ritz-get install ccorral`) builds, links and installs the systemd unit, and the daemon
-  creates `claude.slice` if it is missing.
-
 ### Fixed
-- **First install**: A running old install is restarted on first install, and you are told
-  when the service is disabled.
-
-## 2026-10-22
-
-### Added
-- **Install options**: `install --yes` and `uninstall --yes` answer every question yes
-  without reading stdin.
-
-### Info
-- **Agent hint**: The README tells Claude Code sessions to launch commands with
-  `ccorral --` via `CLAUDE.md`.
+- **First install**: A running old version is restarted, and you are told if the service
+  is turned off.
 
 ## 2026-10-21
 
 ### Added
-- **Run in the slice**: `ccorral -- CMD` runs a command inside `claude.slice`.
-
-## 2026-10-12
-
-### Info
-- **README**: The intro mentions the weights and the memory limit.
+- **Run a command inside**: `ccorral -- COMMAND` runs a command with Claude's limits.
 
 ## 2026-10-10
 
 ### Added
-- **CPU weight**: A CPU weight setting for the slice (default idle).
-- **I/O weight and memory limit**: Settings for I/O weight and a soft memory limit
-  (`MemoryHigh`).
+- **Priority settings**: Choose how much processor, disk and memory Claude may use.
 
 ## 2026-10-07
 
 ### Added
-- **First release**: Pins Claude Code CLI sessions, and everything they spawn, to a chosen
-  set of CPU cores in the systemd user slice `claude.slice`, so your desktop stays
+- **First release**: Keeps Claude Code on a chosen set of CPU cores so your desktop stays
   responsive. Linux only.
-- **Sweeper**: A daemon moves new Claude processes into the slice, every 5 s by default
-  (setting: sweep interval).
-- **Tray and settings**: A tray icon with radio modes (`dark` icon theme by default) and a
-  terminal settings UI with per-core groups and the sweep interval.
-- **CLI**: `ccorral status`, `reload`, `green`, `yellow` and `red` talk to the running
-  daemon, and tell you to install when the service is missing.
+- **Tray icon and settings**: Switch modes from the tray and adjust options in the
+  terminal.
